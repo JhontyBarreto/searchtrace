@@ -1,0 +1,19 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+# local run state, credentials and collected data never get committed
+.env
+.env.*
+*.pem
+*credentials*.json
+*service-account*.json
+token.json
+searchtrace-data/
+searchtrace-out/
+.searchtrace/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*

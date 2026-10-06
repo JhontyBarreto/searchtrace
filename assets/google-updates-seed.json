@@ -1,0 +1,606 @@
+{
+ "generatedAt": "2026-10-06T12:39:19Z",
+ "sourcePages": [
+  "https://status.search.google.com/products/QAVfsAEBQ159b2mEWBYF/history",
+  "https://status.search.google.com/products/DRyTdKyPd41QXD2hnncp/history",
+  "https://status.search.google.com/products/rGHU1u87FJnkP6W2GwMi/history",
+  "https://status.search.google.com/products/pKUD9XkLn3TBLquSpQMD/history"
+ ],
+ "events": [
+  {
+   "id": "XhUDXP7A67iHCD2kmbVu",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "spam",
+   "title": "September 2026 spam update",
+   "begin": "2026-09-24T16:15:00Z",
+   "end": null,
+   "url": "https://status.search.google.com/incidents/XhUDXP7A67iHCD2kmbVu"
+  },
+  {
+   "id": "LEubPCm2octf2uMqCFKE",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "spam",
+   "title": "August 2026 spam update",
+   "begin": "2026-08-18T16:27:00Z",
+   "end": "2026-08-21T08:49:00Z",
+   "url": "https://status.search.google.com/incidents/LEubPCm2octf2uMqCFKE"
+  },
+  {
+   "id": "YUX1peHev5a4fkxLDiUQ",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "spam",
+   "title": "June 2026 spam update",
+   "begin": "2026-06-24T16:00:00Z",
+   "end": "2026-06-26T17:00:00Z",
+   "url": "https://status.search.google.com/incidents/YUX1peHev5a4fkxLDiUQ"
+  },
+  {
+   "id": "wdAXJk6LRRihEjpzEeWE",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "core",
+   "title": "May 2026 core update",
+   "begin": "2026-05-21T15:40:00Z",
+   "end": "2026-06-02T12:40:00Z",
+   "url": "https://status.search.google.com/incidents/wdAXJk6LRRihEjpzEeWE"
+  },
+  {
+   "id": "7eTbAa2jWdToLkraZj5y",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "core",
+   "title": "March 2026 core update",
+   "begin": "2026-03-27T09:00:00Z",
+   "end": "2026-04-08T13:00:00Z",
+   "url": "https://status.search.google.com/incidents/7eTbAa2jWdToLkraZj5y"
+  },
+  {
+   "id": "VbnSXAH4SmEcxPtx4YSD",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "spam",
+   "title": "March 2026 spam update",
+   "begin": "2026-03-24T19:00:00Z",
+   "end": "2026-03-25T14:30:00Z",
+   "url": "https://status.search.google.com/incidents/VbnSXAH4SmEcxPtx4YSD"
+  },
+  {
+   "id": "TZF4pLmbzFdoBPP6o3iv",
+   "source": "seed",
+   "service": "Serving",
+   "kind": "outage",
+   "title": "Serving was experiencing an issue",
+   "begin": "2026-02-25T03:55:00Z",
+   "end": "2026-02-25T04:10:00Z",
+   "url": "https://status.search.google.com/incidents/TZF4pLmbzFdoBPP6o3iv"
+  },
+  {
+   "id": "mYbNTqV1ytDc2fA8hUz4",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "discover",
+   "title": "February 2026 Discover update",
+   "begin": "2026-02-05T17:00:00Z",
+   "end": "2026-02-27T10:00:00Z",
+   "url": "https://status.search.google.com/incidents/mYbNTqV1ytDc2fA8hUz4"
+  },
+  {
+   "id": "DsirqJ1gpPRgVQeccPRv",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "core",
+   "title": "December 2025 core update",
+   "begin": "2025-12-11T17:25:00Z",
+   "end": "2025-12-29T19:00:00Z",
+   "url": "https://status.search.google.com/incidents/DsirqJ1gpPRgVQeccPRv"
+  },
+  {
+   "id": "pW6WN7Ymo49q7z8pKk9w",
+   "source": "seed",
+   "service": "Serving",
+   "kind": "outage",
+   "title": "Serving is experiencing an ongoing issue",
+   "begin": "2025-10-03T20:00:00Z",
+   "end": "2025-10-06T20:40:00Z",
+   "url": "https://status.search.google.com/incidents/pW6WN7Ymo49q7z8pKk9w"
+  },
+  {
+   "id": "a7Aainy6E9rZsmfq82xt",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "spam",
+   "title": "August 2025 spam update",
+   "begin": "2025-08-26T16:00:00Z",
+   "end": "2025-09-22T07:00:00Z",
+   "url": "https://status.search.google.com/incidents/a7Aainy6E9rZsmfq82xt"
+  },
+  {
+   "id": "riq1AuqETW46NfBCe5NT",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "core",
+   "title": "June 2025 core update",
+   "begin": "2025-06-30T14:30:00Z",
+   "end": "2025-07-17T08:00:00Z",
+   "url": "https://status.search.google.com/incidents/riq1AuqETW46NfBCe5NT"
+  },
+  {
+   "id": "rX6zGEp9vJJxxrY16g4A",
+   "source": "seed",
+   "service": "Indexing",
+   "kind": "outage",
+   "title": "Google Search is experiencing an indexing issue",
+   "begin": "2025-06-12T23:54:00Z",
+   "end": "2025-06-13T05:15:00Z",
+   "url": "https://status.search.google.com/incidents/rX6zGEp9vJJxxrY16g4A"
+  },
+  {
+   "id": "wNcefVMLpVGGoFLzgMEg",
+   "source": "seed",
+   "service": "Serving",
+   "kind": "outage",
+   "title": "There's an ongoing issue with serving Google Lens, Discover, and Voice Search.",
+   "begin": "2025-06-12T18:00:00Z",
+   "end": "2025-06-12T20:30:00Z",
+   "url": "https://status.search.google.com/incidents/wNcefVMLpVGGoFLzgMEg"
+  },
+  {
+   "id": "zpmwuSwifjDjfrVdaZUx",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "core",
+   "title": "March 2025 core update",
+   "begin": "2025-03-13T16:00:00Z",
+   "end": "2025-03-27T12:35:00Z",
+   "url": "https://status.search.google.com/incidents/zpmwuSwifjDjfrVdaZUx"
+  },
+  {
+   "id": "UUq2WSouY7PhSm8zvtD1",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "spam",
+   "title": "December 2024 spam update",
+   "begin": "2024-12-19T17:00:00Z",
+   "end": "2024-12-26T19:00:00Z",
+   "url": "https://status.search.google.com/incidents/UUq2WSouY7PhSm8zvtD1"
+  },
+  {
+   "id": "V9nDKuo6nWKh2ThBALgA",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "core",
+   "title": "December 2024 core update",
+   "begin": "2024-12-12T15:30:00Z",
+   "end": "2024-12-18T19:00:00Z",
+   "url": "https://status.search.google.com/incidents/V9nDKuo6nWKh2ThBALgA"
+  },
+  {
+   "id": "kdTQ3CitewEHCy5vuhTD",
+   "source": "seed",
+   "service": "Serving",
+   "kind": "outage",
+   "title": "Google Lens is experiencing a serving issue",
+   "begin": "2024-12-12T13:38:00Z",
+   "end": "2024-12-13T13:53:00Z",
+   "url": "https://status.search.google.com/incidents/kdTQ3CitewEHCy5vuhTD"
+  },
+  {
+   "id": "iGN9Cz8C64gm57ZXwxze",
+   "source": "seed",
+   "service": "Indexing",
+   "kind": "outage",
+   "title": "Google Search is experiencing an indexing issue",
+   "begin": "2024-12-09T21:30:00Z",
+   "end": "2024-12-10T00:30:00Z",
+   "url": "https://status.search.google.com/incidents/iGN9Cz8C64gm57ZXwxze"
+  },
+  {
+   "id": "G7rp11wqTaTGn6JjiPF3",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "core",
+   "title": "November 2024 core update",
+   "begin": "2024-11-11T19:00:00Z",
+   "end": "2024-12-05T08:00:00Z",
+   "url": "https://status.search.google.com/incidents/G7rp11wqTaTGn6JjiPF3"
+  },
+  {
+   "id": "8FqjYCvePmrsF9P5assw",
+   "source": "seed",
+   "service": "Serving",
+   "kind": "outage",
+   "title": "Serving is experiencing an ongoing issue",
+   "begin": "2024-09-15T05:22:00Z",
+   "end": "2024-09-15T08:09:00Z",
+   "url": "https://status.search.google.com/incidents/8FqjYCvePmrsF9P5assw"
+  },
+  {
+   "id": "42XCLGtpuCZkzqe4dc6S",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "other_ranking",
+   "title": "Ranking is experiencing an ongoing issue.",
+   "begin": "2024-08-16T00:15:00Z",
+   "end": "2024-08-20T11:30:00Z",
+   "url": "https://status.search.google.com/incidents/42XCLGtpuCZkzqe4dc6S"
+  },
+  {
+   "id": "gVx6b2o78zke7GrMidGy",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "core",
+   "title": "August 2024 core update",
+   "begin": "2024-08-15T14:58:00Z",
+   "end": "2024-09-03T19:00:00Z",
+   "url": "https://status.search.google.com/incidents/gVx6b2o78zke7GrMidGy"
+  },
+  {
+   "id": "mFyYTxqTvS3Gp9fD3JP2",
+   "source": "seed",
+   "service": "Indexing",
+   "kind": "outage",
+   "title": "Fresh content indexing issue",
+   "begin": "2024-07-08T21:32:00Z",
+   "end": "2024-07-08T23:21:00Z",
+   "url": "https://status.search.google.com/incidents/mFyYTxqTvS3Gp9fD3JP2"
+  },
+  {
+   "id": "Gjz5TP3aaDRmKsSWgWF4",
+   "source": "seed",
+   "service": "Indexing",
+   "kind": "outage",
+   "title": "Google Search is experiencing an indexing issue",
+   "begin": "2024-06-20T18:00:00Z",
+   "end": "2024-06-21T04:03:00Z",
+   "url": "https://status.search.google.com/incidents/Gjz5TP3aaDRmKsSWgWF4"
+  },
+  {
+   "id": "QdUeCQx3LRVbzQ3E7FiD",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "spam",
+   "title": "June 2024 spam update",
+   "begin": "2024-06-20T15:12:00Z",
+   "end": "2024-06-27T16:11:00Z",
+   "url": "https://status.search.google.com/incidents/QdUeCQx3LRVbzQ3E7FiD"
+  },
+  {
+   "id": "6xK73KdB1GVcQc2kRtEm",
+   "source": "seed",
+   "service": "Serving",
+   "kind": "outage",
+   "title": "There's an ongoing issue with serving some features in Google Search.",
+   "begin": "2024-05-31T02:36:00Z",
+   "end": "2024-05-31T15:27:00Z",
+   "url": "https://status.search.google.com/incidents/6xK73KdB1GVcQc2kRtEm"
+  },
+  {
+   "id": "iXz2PJfodvyjaVUeqxZE",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "spam",
+   "title": "March 2024 spam update",
+   "begin": "2024-03-05T17:03:00Z",
+   "end": "2024-03-20T14:09:00Z",
+   "url": "https://status.search.google.com/incidents/iXz2PJfodvyjaVUeqxZE"
+  },
+  {
+   "id": "1jW2F89qC2NxJBWGiKxE",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "core",
+   "title": "March 2024 core update",
+   "begin": "2024-03-05T17:02:00Z",
+   "end": "2024-04-19T17:00:00Z",
+   "url": "https://status.search.google.com/incidents/1jW2F89qC2NxJBWGiKxE"
+  },
+  {
+   "id": "Jh8ty34prbHLqSRiWKqm",
+   "source": "seed",
+   "service": "Indexing",
+   "kind": "outage",
+   "title": "We're investigating an issue with indexing in Google Search.",
+   "begin": "2024-01-31T23:16:00Z",
+   "end": "2024-02-08T11:36:00Z",
+   "url": "https://status.search.google.com/incidents/Jh8ty34prbHLqSRiWKqm"
+  },
+  {
+   "id": "hySMmncEDZ7Xpaf9i32C",
+   "source": "seed",
+   "service": "Serving",
+   "kind": "outage",
+   "title": "There's an ongoing issue with the Google homepage for Firefox users on Android devices.",
+   "begin": "2024-01-08T15:33:00Z",
+   "end": "2024-01-09T15:37:00Z",
+   "url": "https://status.search.google.com/incidents/hySMmncEDZ7Xpaf9i32C"
+  },
+  {
+   "id": "ABYXX7927AzqGbGTk5tm",
+   "source": "seed",
+   "service": "Indexing",
+   "kind": "outage",
+   "title": "Google Search is experiencing an indexing issue",
+   "begin": "2023-12-21T17:00:00Z",
+   "end": "2023-12-21T22:30:00Z",
+   "url": "https://status.search.google.com/incidents/ABYXX7927AzqGbGTk5tm"
+  },
+  {
+   "id": "VqRTcmyQCwfpuYeaVNfn",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "other_ranking",
+   "title": "November 2023 reviews update",
+   "begin": "2023-11-08T16:58:00Z",
+   "end": "2023-12-07T17:00:00Z",
+   "url": "https://status.search.google.com/incidents/VqRTcmyQCwfpuYeaVNfn"
+  },
+  {
+   "id": "WtY1CQgfqrr2cjxKbyUk",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "core",
+   "title": "November 2023 core update",
+   "begin": "2023-11-02T19:09:00Z",
+   "end": "2023-11-28T16:30:00Z",
+   "url": "https://status.search.google.com/incidents/WtY1CQgfqrr2cjxKbyUk"
+  },
+  {
+   "id": "gNEys4Y3VYpGXWNndADm",
+   "source": "seed",
+   "service": "Serving",
+   "kind": "outage",
+   "title": "Serving is experiencing an ongoing issue",
+   "begin": "2023-10-26T09:45:00Z",
+   "end": "2023-10-26T15:51:00Z",
+   "url": "https://status.search.google.com/incidents/gNEys4Y3VYpGXWNndADm"
+  },
+  {
+   "id": "hJzAUmMsBkMsVpBBatXZ",
+   "source": "seed",
+   "service": "Indexing",
+   "kind": "outage",
+   "title": "Google Search is experiencing an indexing issue",
+   "begin": "2023-10-05T17:30:00Z",
+   "end": "2023-10-05T23:20:00Z",
+   "url": "https://status.search.google.com/incidents/hJzAUmMsBkMsVpBBatXZ"
+  },
+  {
+   "id": "VKyoS53ULWzSp8BoDxqk",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "core",
+   "title": "October 2023 core update",
+   "begin": "2023-10-05T16:00:00Z",
+   "end": "2023-10-19T15:00:00Z",
+   "url": "https://status.search.google.com/incidents/VKyoS53ULWzSp8BoDxqk"
+  },
+  {
+   "id": "fCUAy6TvbDMkkLAGcwkj",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "other_ranking",
+   "title": "Ranking is experiencing an ongoing issue",
+   "begin": "2023-10-05T07:00:00Z",
+   "end": "2023-10-31T07:00:00Z",
+   "url": "https://status.search.google.com/incidents/fCUAy6TvbDMkkLAGcwkj"
+  },
+  {
+   "id": "NzcEhGMDhbQEdXCS35xL",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "spam",
+   "title": "October 2023 spam update",
+   "begin": "2023-10-04T16:51:00Z",
+   "end": "2023-10-20T05:15:00Z",
+   "url": "https://status.search.google.com/incidents/NzcEhGMDhbQEdXCS35xL"
+  },
+  {
+   "id": "53diuQvcEsgzqXTPBb8p",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "other_ranking",
+   "title": "September 2023 helpful content update",
+   "begin": "2023-09-14T20:19:00Z",
+   "end": "2023-09-28T07:07:00Z",
+   "url": "https://status.search.google.com/incidents/53diuQvcEsgzqXTPBb8p"
+  },
+  {
+   "id": "nBtYtBeex4GYBbdDS2LX",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "core",
+   "title": "August 2023 core update",
+   "begin": "2023-08-22T17:30:00Z",
+   "end": "2023-09-07T20:03:00Z",
+   "url": "https://status.search.google.com/incidents/nBtYtBeex4GYBbdDS2LX"
+  },
+  {
+   "id": "QfKM8nXdV39zGE5w2eH1",
+   "source": "seed",
+   "service": "Indexing",
+   "kind": "outage",
+   "title": "Google News indexing is experiencing an ongoing issue",
+   "begin": "2023-06-21T07:00:00Z",
+   "end": "2023-07-14T21:06:00Z",
+   "url": "https://status.search.google.com/incidents/QfKM8nXdV39zGE5w2eH1"
+  },
+  {
+   "id": "5XRfC46rorevFt8yN8iR",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "other_ranking",
+   "title": "April 2023 reviews update",
+   "begin": "2023-04-12T16:00:00Z",
+   "end": "2023-04-25T18:24:00Z",
+   "url": "https://status.search.google.com/incidents/5XRfC46rorevFt8yN8iR"
+  },
+  {
+   "id": "Cou8Tr74r7EXNthuEsaG",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "core",
+   "title": "March 2023 core update",
+   "begin": "2023-03-15T07:00:00Z",
+   "end": "2023-03-28T14:26:00Z",
+   "url": "https://status.search.google.com/incidents/Cou8Tr74r7EXNthuEsaG"
+  },
+  {
+   "id": "NDjZ11MEUJb5i62hy5aN",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "other_ranking",
+   "title": "February 2023 product reviews update",
+   "begin": "2023-02-21T08:00:00Z",
+   "end": "2023-03-07T08:00:00Z",
+   "url": "https://status.search.google.com/incidents/NDjZ11MEUJb5i62hy5aN"
+  },
+  {
+   "id": "CxXUEK28vCKqkNocPhKR",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "spam",
+   "title": "December 2022 link spam update",
+   "begin": "2022-12-14T08:00:00Z",
+   "end": "2023-01-12T08:00:00Z",
+   "url": "https://status.search.google.com/incidents/CxXUEK28vCKqkNocPhKR"
+  },
+  {
+   "id": "XMdX5PmbMvKW4fv3CRvn",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "other_ranking",
+   "title": "December 2022 helpful content update",
+   "begin": "2022-12-05T08:00:00Z",
+   "end": "2023-01-12T08:00:00Z",
+   "url": "https://status.search.google.com/incidents/XMdX5PmbMvKW4fv3CRvn"
+  },
+  {
+   "id": "SAeYuxVSo39HHotQNXHr",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "spam",
+   "title": "October 2022 spam update",
+   "begin": "2022-10-19T07:00:00Z",
+   "end": "2022-10-21T07:00:00Z",
+   "url": "https://status.search.google.com/incidents/SAeYuxVSo39HHotQNXHr"
+  },
+  {
+   "id": "ZYwuBXDhkwaoop2V5epM",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "other_ranking",
+   "title": "September 2022 product reviews update",
+   "begin": "2022-09-20T07:00:00Z",
+   "end": "2022-09-26T07:00:00Z",
+   "url": "https://status.search.google.com/incidents/ZYwuBXDhkwaoop2V5epM"
+  },
+  {
+   "id": "Y2Cg5k2xLJvfNqR58kEt",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "core",
+   "title": "September 2022 core update",
+   "begin": "2022-09-12T07:00:00Z",
+   "end": "2022-09-26T07:00:00Z",
+   "url": "https://status.search.google.com/incidents/Y2Cg5k2xLJvfNqR58kEt"
+  },
+  {
+   "id": "sbKc4YSptrSxcUZFDKwU",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "other_ranking",
+   "title": "August 2022 helpful content update",
+   "begin": "2022-08-25T07:00:00Z",
+   "end": "2022-09-09T07:00:00Z",
+   "url": "https://status.search.google.com/incidents/sbKc4YSptrSxcUZFDKwU"
+  },
+  {
+   "id": "Xiid524od7fpCak86sNS",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "other_ranking",
+   "title": "July 2022 product reviews update",
+   "begin": "2022-07-27T07:00:00Z",
+   "end": "2022-08-02T07:00:00Z",
+   "url": "https://status.search.google.com/incidents/Xiid524od7fpCak86sNS"
+  },
+  {
+   "id": "GHwLLtDS64a7nDng8xhD",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "core",
+   "title": "May 2022 core update",
+   "begin": "2022-05-25T07:00:00Z",
+   "end": "2022-06-09T07:00:00Z",
+   "url": "https://status.search.google.com/incidents/GHwLLtDS64a7nDng8xhD"
+  },
+  {
+   "id": "iYWoNu4QXRsQUrzxrbLv",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "other_ranking",
+   "title": "March 2022 product reviews update",
+   "begin": "2022-03-23T07:00:00Z",
+   "end": "2022-04-06T07:00:00Z",
+   "url": "https://status.search.google.com/incidents/iYWoNu4QXRsQUrzxrbLv"
+  },
+  {
+   "id": "zDCQR5mxLU3ZrQeQvwqN",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "other_ranking",
+   "title": "Page experience update for desktop",
+   "begin": "2022-02-22T08:00:00Z",
+   "end": "2022-03-03T08:00:00Z",
+   "url": "https://status.search.google.com/incidents/zDCQR5mxLU3ZrQeQvwqN"
+  },
+  {
+   "id": "hgwP7ei5H1uKbYSeZrBZ",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "other_ranking",
+   "title": "December 2021 product reviews update",
+   "begin": "2021-12-01T08:00:00Z",
+   "end": "2021-12-21T08:00:00Z",
+   "url": "https://status.search.google.com/incidents/hgwP7ei5H1uKbYSeZrBZ"
+  },
+  {
+   "id": "FncPfR7zRSZ3diemah4o",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "core",
+   "title": "November 2021 core update",
+   "begin": "2021-11-17T08:00:00Z",
+   "end": "2021-11-30T08:00:00Z",
+   "url": "https://status.search.google.com/incidents/FncPfR7zRSZ3diemah4o"
+  },
+  {
+   "id": "AFdXceQVsh1GEfKFvHyD",
+   "source": "seed",
+   "service": "Ranking",
+   "kind": "spam",
+   "title": "November 2021 spam update",
+   "begin": "2021-11-03T07:00:00Z",
+   "end": "2021-11-11T08:00:00Z",
+   "url": "https://status.search.google.com/incidents/AFdXceQVsh1GEfKFvHyD"
+  }
+ ],
+ "curated": [
+  {
+   "id": "curated-num100-2025-09",
+   "source": "curated",
+   "service": "Reporting",
+   "kind": "data_anomaly",
+   "title": "Google stopped honouring the &num=100 results parameter. Many sites saw desktop impressions fall and average position improve in Search Console from mid-September 2025, with no change in real traffic.",
+   "begin": "2025-09-10T00:00:00Z",
+   "end": "2025-09-16T00:00:00Z",
+   "endEstimated": true,
+   "url": null,
+   "verify": "Window is approximate (reported 10-14 Sep 2025). Builder: keep endEstimated=true, do not invent a source URL; doctor labels it 'community-reported'."
+  }
+ ],
+ "anomaliesPage": "https://support.google.com/webmasters/answer/6211453"
+}
