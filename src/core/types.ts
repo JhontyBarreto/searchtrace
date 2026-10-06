@@ -1,5 +1,9 @@
 // ============================================================================
 // searchtrace core contracts. FROZEN after Phase 0. Additive changes only, by WP-A.
+// Phase 2 additions (all optional or widening, so every Phase 1 caller still compiles):
+//   SpendEvent design.location, HttpRequest.gunzip, GoogleAuth.source/invalidate,
+//   CurveCell.date, BarGroup keys on ScopeDecomposition.ci95 and Finding.componentCi95,
+//   AioInput.fdrQ, DemoTruth.expect extras (DemoExpectation).
 // ============================================================================
 import type { Config } from './config.js';
 export type { Config };
@@ -148,7 +152,8 @@ export interface SerpObservation {
 }
 export type SpendEvent = { at: Instant; runId: string } & (
   | { type: 'design'; isoWeek: string; budgetUsd: number; mode: 'census' | 'sample';
-      units: { intentKey: string; keyword: string; device: Device; pi: number; design: SampleDesignKind; weekday: number }[] }
+      units: { intentKey: string; keyword: string; device: Device; pi: number; design: SampleDesignKind; weekday: number }[];
+      location?: { locationCode: number; languageCode: string } }   // the location baked into that week's intent keys
   | { type: 'intent'; intentKey: string; tag: string; estUsd: number }
   | { type: 'posted'; intentKey: string; tag: string; taskId: string; costUsd: number }
   | { type: 'failed' | 'unknown' | 'abandoned'; intentKey: string; tag: string; reason: string }
@@ -271,6 +276,7 @@ export interface HttpRequest {
   retry?: false | { attempts: number; baseMs: number; capMs: number; on: number[] }; // default: 6, 1000, 64000, [429,500,502,503,504]
   idempotent?: boolean;                                     // retries on network errors only when true (default true for GET)
   maxBytes?: number;                                        // decoded bytes; abort and set truncated
+  gunzip?: boolean;                                         // a body starting with the gzip magic bytes is decompressed (.xml.gz sitemaps); maxBytes caps the decompressed size
   redirect?: 'follow' | 'manual';
   signal?: AbortSignal;
 }
@@ -283,6 +289,8 @@ export interface GoogleAuth {
   principal: string;                                        // SA email or account email or 'user credential'
   scopes: string[];
   headers(signal?: AbortSignal): Promise<Record<string, string>>;   // Authorization + optional x-goog-user-project
+  source?: string;                                          // where the credential came from (a path or 'env NAME'), never its content
+  invalidate?(): void;                                      // drop the cached access token: the next headers() call refreshes (401 retry once)
 }
 
 // ---------- Logging and secrets ----------
@@ -362,7 +370,7 @@ export type Segment = 'desktop|brand' | 'desktop|nonbrand' | 'mobile|brand' | 'm
 export interface BrandMatcher { isBrand(query: string): boolean; tokens: string[]; suggestions(cells: Cell[], curve: CtrCurve | null, homepage: string): string[] }
 
 // ---------- Analysis: CTR curve ----------
-export interface CurveCell { p: number; c: number; i: number; seg: Segment }   // one day-level named cell; p = ps / i
+export interface CurveCell { p: number; c: number; i: number; seg: Segment; date?: IsoDate }   // one day-level named cell; p = ps / i; date splits the holdout (cells without one only train)
 export interface CurveBin { seg: Segment; lo: number; hi: number; center: number; clicks: number; impressions: number; prior: number; fit: number }
 export interface CtrCurve {
   f(p: number, seg: Segment): number;                       // monotone non-increasing in p, floor 1e-5
@@ -384,6 +392,8 @@ export interface Bars {
   disappeared: number;     // -C_b when I_c = 0
   aioCitation: number;     // R + S merged when AIO citation flattening is detected
 }                          // invariant: sum of all fields === C_c - C_b (to 1e-9)
+/** Display groups (5.5.5) whose CIs cannot be summed from per-bar CIs: ranking = rank + visibility, churn = appeared + disappeared. */
+export type BarGroup = 'ranking' | 'churn';
 export interface UnitKey { page: string; query: string | null; device: Device | 'all' }   // query null = anonymised remainder
 export interface WindowStats { I: number; C: number; F: number; pbar: number | null }
 export type UnitFlag = 'page1_crossing' | 'k_fallback' | 'aio_flattening' | 'remainder' | 'remainder_clamped' | 'remainder_sparse' | 'curve_unstable';
@@ -394,7 +404,7 @@ export interface ScopeDecomposition {
   curClicks: number;
   deltaClicks: number;
   bars: Bars;
-  ci95: Partial<Record<keyof Bars | 'total', [number, number]>> | null;   // null when not bootstrapped
+  ci95: Partial<Record<keyof Bars | BarGroup | 'total', [number, number]>> | null;   // null when not bootstrapped
   pTotal: number | null;
   units: number;
   namedClickShare: number;                                  // share of baseline+current clicks in named units
@@ -461,7 +471,7 @@ export interface Finding {
   cause: Cause | null;
   causeConfidence: Confidence;
   components: Bars | null;
-  componentCi95: Partial<Record<keyof Bars, [number, number]>> | null;
+  componentCi95: Partial<Record<keyof Bars | BarGroup, [number, number]>> | null;
   power: (PowerInfo & { perWeek: number }) | null;
   template: TemplateId;
   slots: Record<string, string | number>;
@@ -569,6 +579,7 @@ export interface AioInput {
   windows: AnalysisWindows; siteDomain: string; pageTitles: Map<string, string>;
   samePosByQuery: Map<string, number>;                      // 'keyword|device' -> sum of samePos bars (for apportioning)
   rng: (key: string) => Rng; delta: number; bootstrap: number;
+  fdrQ?: number;                                            // config analysis.fdrQ (default 0.10)
 }
 export interface AioQueryFact {
   keyword: string; device: Device; checks: number; aioChecks: number;
@@ -612,7 +623,18 @@ export interface AnalysisOutput {
 }
 export interface DemoTruth {
   property: string; dataThrough: IsoDate;
-  expect: { kind: FindingKind; unitKey: string; real: Verdict; cause: Cause | null; tauRange?: [number, number] }[];
+  expect: DemoExpectation[];
+}
+/** One planted-story expectation. The optional fields pin which finding answers it (spec 6.9). */
+export interface DemoExpectation {
+  kind: FindingKind; unitKey: string; real: Verdict; cause: Cause | null; tauRange?: [number, number];
+  realAnyOf?: Verdict[];                                    // any of these verdicts passes (a diluted effect at this level)
+  eventId?: string;                                         // update_impact: the Google event the row is for
+  failedCheck?: IdCheckName;                                // the identification check that must fail
+  estimator?: 'cross_section' | 'did';                      // aio_effect: which estimator
+  synthesis?: SiteChangeImpact['synthesis'];                // site_change_impact: the synthesis row
+  needsMde?: boolean;                                       // the finding must carry a minimum detectable effect
+  note?: string;                                            // what was planted, in plain words
 }
 
 // ---------- Graph (graphify node-link) ----------

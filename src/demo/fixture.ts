@@ -7,19 +7,24 @@
 //      A 10% site-wide dip during the March 2026 spam and core updates (competing events).
 //   2. A title template change on 40 of the 90 /blog/* posts on 9 Sep 2026, recrawled 12 to 15 Sep:
 //      click rate at the same position -30% from the day after each recrawl.
-//   3. An AI Overview on 40 how-to searches from 1 Sep 2026 (30 not citing us: click rate x0.7;
-//      10 citing us), with 60 checked control searches that never show one.
+//   3. An AI Overview on 40 how-to searches from 6 Sep 2026, the first day of the current window
+//      (30 not citing us: click rate x0.7; 10 citing us), with 60 checked control searches that
+//      never show one. Spec 6.9 said 1 Sep, which falls inside the baseline window and dilutes it.
 //   4. A noise week: brand searches +25% for one week inside the current window (about +6% over
 //      the 28 days, inside the homepage's normal range).
 //   5. A thin page (/areas/pellowby, 29 clicks in the baseline window, 17 in the current one).
 // The thin page carries about 29 clicks per window rather than 8: findings are emitted for the top
 // 25 pages by click change, and a -40% move on 8 clicks (-3) would never make that list. 29 still
-// misses the 30-click floor, so the page is "not enough data" with an MDE, as planted.
+// misses the 30-click floor, so the page is "not enough data" with an MDE, as planted. To keep it in
+// the top 25, the site's other small pages are quieter than it, and blog traffic sits on twelve
+// popular posts (seven changed, five untouched, so the title-change comparison has real controls).
+// Every search text belongs to one page (an AI Overview changes the whole results page).
 import { intentKey, sha256Hex } from '../core/ids.js';
 import { rngFor } from '../core/rng.js';
 import { addDays, dateRange, isoWeek, weekday } from '../core/time.js';
 import type {
-  DataStore, DemoTruth, Device, GoogleEvent, InspectionRecord, IsoDate, PageFields, PartitionMeta, Rng, SerpObservation, SnapshotRecord,
+  DataStore, DemoExpectation, DemoTruth, Device, GoogleEvent, InspectionRecord, IsoDate, PageFields, PartitionMeta, Rng, SerpObservation,
+  SnapshotRecord,
 } from '../core/types.js';
 import { layout } from '../store/layout.js';
 import { poissonDraw } from '../analyze/stats.js';
@@ -46,28 +51,15 @@ const RUN = {
 // Planted dates.
 const DEC_CORE = { from: '2025-12-11', to: '2025-12-29' };
 const MARCH_DIP = { from: '2026-03-24', to: '2026-04-20' };
-const AIO_FROM = '2026-09-01';
+// The first day of the current window, so the baseline window is clean and the before-and-after
+// comparison measures the planted x0.7 without dilution (spec 6.9 said 1 Sep; see METHODOLOGY).
+const AIO_FROM = '2026-09-06';
 const NOISE_WEEK = { from: '2026-09-21', to: '2026-09-27' };
 const BASELINE: [IsoDate, IsoDate] = [addDays(DEMO_DATA_THROUGH, -55), addDays(DEMO_DATA_THROUGH, -28)];
 const CURRENT: [IsoDate, IsoDate] = [addDays(DEMO_DATA_THROUGH, -27), DEMO_DATA_THROUGH];
 const DOW = [1.08, 1.1, 1.08, 1.04, 0.97, 0.82, 0.91];
 
-/** Extra fields on truth expectations; the e2e test reads them, DemoTruth stays as frozen. */
-export interface DemoExpectation {
-  kind: DemoTruth['expect'][number]['kind'];
-  unitKey: string;
-  real: DemoTruth['expect'][number]['real'];
-  cause: DemoTruth['expect'][number]['cause'];
-  tauRange?: [number, number];
-  /** Any of these verdicts passes (when the planted effect is diluted at this level). */
-  realAnyOf?: DemoTruth['expect'][number]['real'][];
-  eventId?: string;
-  failedCheck?: string;
-  estimator?: 'cross_section' | 'did';
-  synthesis?: string;
-  needsMde?: boolean;
-  note: string;
-}
+export type { DemoExpectation };
 
 // ---------------------------------------------------------------------------
 // The made-up site
@@ -110,7 +102,12 @@ function buildSite(rng: Rng): { pages: Page[]; queries: Query[] } {
     pages.push(p);
     return p;
   };
+  // One page per search: an AI Overview changes the whole results page, so a search text shared by
+  // a blog post and a how-to service search would carry the planted effect on one page only.
+  const texts = new Set<string>();
   const query = (q: string, pg: Page, kind: Kind, imp: number, pos: number, desk = 0.6): void => {
+    if (texts.has(q)) return;
+    texts.add(q);
     queries.push({ q, page: pg.url, kind, imp, desk, pos, brand: kind === 'brand' });
   };
 
@@ -123,7 +120,7 @@ function buildSite(rng: Rng): { pages: Page[]; queries: Query[] } {
   brandQs.forEach((q, k) => query(q, home, 'brand', k === 0 ? 120 : k < 4 ? 30 : 8, 1.05 + 0.05 * (k % 3), 0.55));
   for (const s of SINGLES) {
     const pg = page(s, 'single', `${titleCase(s)} | ${SITE_NAME}`, 0.4);
-    query(`plumber ${s.replace('-', ' ')}`, pg, 'single', 14, 7 + (s.length % 5));
+    query(`plumber ${s.replace('-', ' ')}`, pg, 'single', 7, 7 + (s.length % 5));
   }
 
   // Services: six big pages host the AI Overview searches; six small ones.
@@ -137,7 +134,7 @@ function buildSite(rng: Rng): { pages: Page[]; queries: Query[] } {
     variants.forEach((q, v) => {
       const isControl = big && control < 48;
       if (isControl) control++;
-      query(q, pg, isControl ? 'control' : 'service', isControl ? 120 - 8 * v : 4 - 0.3 * v, [2, 3, 4, 5, 7][v % 5] + (big ? 0 : 3), v % 2 === 0 ? 0.62 : 0.4);
+      query(q, pg, isControl ? 'control' : 'service', isControl ? 120 - 8 * v : 2 - 0.15 * v, [2, 3, 4, 5, 7][v % 5] + (big ? 0 : 3), v % 2 === 0 ? 0.62 : 0.4);
     });
     if (big) {
       for (let j = 0; j < 7 && aio < 40; j++) {
@@ -156,7 +153,7 @@ function buildSite(rng: Rng): { pages: Page[]; queries: Query[] } {
       query(`plumber ${name}`, pg, 'thin', 20, 4, 1);
       return;
     }
-    const scale = k < 2 ? 3 : 0.15;
+    const scale = k < 2 ? 3 : 0.08;
     [`plumber ${name}`, `plumbers in ${name}`, `emergency plumber ${name}`, `boiler repair ${name}`, `heating engineer ${name}`, `drain unblocking ${name}`, `bathroom fitter ${name}`, `gas engineer ${name}`]
       .forEach((q, v) => {
         const isControl = v < 3 && control < 60;
@@ -173,8 +170,9 @@ function buildSite(rng: Rng): { pages: Page[]; queries: Query[] } {
       const treated = n % 9 < 4 && n < 90;
       pg.treated = treated;
       if (treated) pg.recrawl = addDays('2026-09-12', n % 4);
-      // A few popular posts (four of them get the new titles), then a long tail of quiet ones.
-      const pop = n < 4 ? 5 : n >= 4 && n < 7 ? 2.5 : 0.05 + 0.07 * rng();
+      // Twelve popular posts (seven of them get the new titles, five keep the old ones and serve as
+      // the untouched comparison), then a long tail of quiet ones.
+      const pop = n < 12 ? 18 + 3 * (n % 3) : 0.05 + 0.07 * rng();
       const words = slug.split('-');
       const qs = [
         words.join(' '), words.slice(-3).join(' '), `${words.slice(-2).join(' ')} fix`, `${words.slice(0, 3).join(' ')} ${words[words.length - 1]}`,

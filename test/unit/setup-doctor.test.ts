@@ -227,6 +227,36 @@ describe('doctor', () => {
     expect(ff.unmatched()).toEqual([]);
   });
 
+  it('warns about a key file in a git repo unless that repo ignores it', async () => {
+    const repo = join(dir, 'tools');
+    const repoKey = join(repo, 'creds', 'token.json');
+    await mkdir(join(repo, '.git', 'info'), { recursive: true });
+    await mkdir(join(repo, 'creds'), { recursive: true });
+    await writeFile(repoKey, '{}');
+    await writeConfig(data, { ...defaultConfig('sc-domain:example.com'), auth: { credentialsEnv: 'X', credentialsFile: repoKey }, inspection: { ...defaultConfig('sc-domain:example.com').inspection, enabled: false } });
+    const tracked = capture();
+    await main(['doctor', '--dir', data], tracked.deps);
+    expect(tracked.stdout()).toContain('  ! The key file is inside a git repository, where it could be committed by mistake');
+
+    await writeFile(join(repo, '.gitignore'), '# secrets\n*.log\ntoken.json\n');
+    const ignored = capture();
+    await main(['doctor', '--dir', data], ignored.deps);
+    expect(ignored.stdout()).toContain('  ✓ Key file is outside this folder, and the git repo it sits in ignores it (.gitignore)');
+
+    // A later '!' rule re-includes it, so the warning comes back.
+    await writeFile(join(repo, 'creds', '.gitignore'), '!token.json\n');
+    const reincluded = capture();
+    await main(['doctor', '--dir', data], reincluded.deps);
+    expect(reincluded.stdout()).toContain('  ! The key file is inside a git repository');
+
+    // A folder rule covers the file too.
+    await rm(join(repo, 'creds', '.gitignore'));
+    await writeFile(join(repo, '.gitignore'), 'creds/\n');
+    const folder = capture();
+    await main(['doctor', '--dir', data], folder.deps);
+    expect(folder.stdout()).toContain('ignores it (.gitignore)');
+  });
+
   it('fails on an old Node, a missing config and a key inside the data folder', async () => {
     const c = capture({ nodeVersion: '20.11.0' });
     expect(await main(['doctor', '--dir', data, '--json'], c.deps)).toBe(2);

@@ -1,6 +1,6 @@
 // readline prompts (TTY only, never with --ci or --yes) and the terminal IO the commands share. Owner: WP-F.
 import { homedir } from 'node:os';
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { StError, ExitCode } from '../core/errors.js';
@@ -157,3 +157,11 @@ export function printError(e: unknown, deps: CliDeps, secrets?: SecretRegistry):
 export function out(deps: CliDeps, line = ''): void {
   deps.stdout.write(`${line}\n`);
 }
+
+/** A path as the user would type it: relative when it sits under cwd, absolute otherwise, quoted when needed. */
+export function displayPath(cwd: string, p: string): string {
+  const rel = relative(cwd, p);
+  const shown = rel === '' ? '.' : rel.startsWith('..') || isAbsolute(rel) ? p : rel;
+  return /[\s"'$`\\!*?;&|<>()]/.test(shown) ? `"${shown.replace(/(["$`\\])/g, '\\$1')}"` : shown;
+}
+

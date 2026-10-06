@@ -13,7 +13,6 @@ import { ROBOTS_MAX_BYTES, allowAllRules, disallowAllRules, parseRobots, type Ro
 export const USER_AGENT = 'searchtrace/0.1 (+https://github.com/searchtrace/searchtrace)';
 export const MAX_REDIRECTS = 5;
 const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
-const NULL_BODY_STATUS = new Set([101, 103, 204, 205, 304]);
 /** How much of a body is searched for a challenge page title. */
 const CHALLENGE_SCAN = 100_000;
 
@@ -40,6 +39,8 @@ export interface GuardedOptions {
   /** Awaited before every request, including each redirect hop (per-host pacing). */
   beforeRequest?: (url: string) => Promise<void>;
   maxRedirects?: number;
+  /** Decompress a body that starts with the gzip magic bytes (an .xml.gz sitemap); maxBytes caps the result. */
+  gunzip?: boolean;
 }
 
 export interface GuardedResponse {
@@ -99,6 +100,7 @@ export async function guardedGet(fetchFn: Fetch, url: string, o: GuardedOptions)
         redirect: 'manual',
         retry: false,
         signal: o.signal,
+        ...(o.gunzip ? { gunzip: true } : {}),
       });
     } catch (e) {
       if (isCancelled(e) || o.signal?.aborted) throw e;
@@ -245,59 +247,4 @@ export async function loadRobots(
   if (status >= 200 && status < 300) return { rules: parseRobots(g.text, o.userAgent), state: 'parsed', status };
   if (status === 429 || status >= 500) return { rules: disallowAllRules(), state: 'unreachable', status };
   return { rules: allowAllRules(), state: 'unavailable', status };
-}
-
-// ---------- gzip bodies (sitemaps) ----------
-
-/**
- * Wraps the injected fetch so a body that starts with the gzip magic bytes (an .xml.gz sitemap
- * served without Content-Encoding) is decompressed as a stream. request() still reads the
- * result and still enforces its decoded-size cap, so a gzip bomb is cut off at maxBytes.
- */
-export function gunzipBodies(inner: Fetch): Fetch {
-  const wrapped = async (input: Parameters<Fetch>[0], init?: Parameters<Fetch>[1]): Promise<Response> => {
-    const res = await inner(input, init);
-    if (!res.body || NULL_BODY_STATUS.has(res.status)) return res;
-    const reader = res.body.getReader();
-    const head: Uint8Array[] = [];
-    let headBytes = 0;
-    let done = false;
-    while (headBytes < 2) {
-      const r = await reader.read();
-      if (r.done) {
-        done = true;
-        break;
-      }
-      head.push(r.value);
-      headBytes += r.value.byteLength;
-    }
-    const first = head.length ? Buffer.concat(head) : new Uint8Array(0);
-    const isGzip = first.length >= 2 && first[0] === 0x1f && first[1] === 0x8b;
-    const replay = new ReadableStream<Uint8Array>({
-      start(controller) {
-        if (first.length) controller.enqueue(new Uint8Array(first));
-        if (done) controller.close();
-      },
-      async pull(controller) {
-        const r = await reader.read();
-        if (r.done) controller.close();
-        else controller.enqueue(r.value);
-      },
-      cancel(reason) {
-        return reader.cancel(reason);
-      },
-    });
-    const headers = new Headers(res.headers);
-    headers.delete('content-length');
-    let body: ReadableStream<Uint8Array> = replay;
-    if (isGzip) {
-      headers.delete('content-encoding');
-      headers.set('content-type', 'application/xml; charset=utf-8');
-      body = replay.pipeThrough(new DecompressionStream('gzip') as unknown as TransformStream<Uint8Array, Uint8Array>);
-    }
-    const out = new Response(body, { status: res.status, statusText: res.statusText, headers });
-    Object.defineProperty(out, 'url', { value: res.url });
-    return out;
-  };
-  return wrapped as Fetch;
 }

@@ -534,20 +534,33 @@ export function periodCompare(i: PeriodCompareInput): PeriodEffect {
     const z = idx(b);
     return [Math.min(x, z), Math.max(x, z)] as const;
   });
-  const r: number[] = [];
-  for (let e = n - 1; e - 2 * len + 1 >= 0; e -= 7) {
-    const first0 = e - 2 * len + 1;
-    const first1 = e - len;
-    const second0 = e - len + 1;
-    if (overlaps(first0, e, spanFrom, spanTo)) continue;
-    if (excluded.some(([x, z]) => overlaps(first0, e, x, z))) continue;
-    const y1 = sumRange(y, first0, first1);
-    const y2 = sumRange(y, second0, e);
-    const s1 = sumRange(i.s, first0, first1);
-    const s2 = sumRange(i.s, second0, e);
-    if (!(y1 > 0) || !(y2 > 0) || !(s1 > 0) || !(s2 > 0)) continue;
-    r.push(Math.log(y2 / s2 / (y1 / s1)));
-  }
+  // A historical pair counts only when both of its windows meet the same floor as the comparison
+  // itself: pairs from a much quieter era carry extra counting noise and would inflate the spread.
+  const pairFloor = Math.max(i.floor, Number.MIN_VALUE);
+  const collect = (skipExcluded: boolean): number[] => {
+    const out: number[] = [];
+    for (let e = n - 1; e - 2 * len + 1 >= 0; e -= 7) {
+      const first0 = e - 2 * len + 1;
+      const first1 = e - len;
+      const second0 = e - len + 1;
+      if (overlaps(first0, e, spanFrom, spanTo)) continue;
+      if (skipExcluded && excluded.some(([x, z]) => overlaps(first0, e, x, z))) continue;
+      const y1 = sumRange(y, first0, first1);
+      const y2 = sumRange(y, second0, e);
+      const s1 = sumRange(i.s, first0, first1);
+      const s2 = sumRange(i.s, second0, e);
+      if (!(y1 >= pairFloor) || !(y2 >= pairFloor) || !(s1 > 0) || !(s2 > 0)) continue;
+      out.push(Math.log(y2 / s2 / (y1 / s1)));
+    }
+    return out;
+  };
+  // Update windows are left out of the null so it describes ordinary weeks. When Google ships
+  // updates so often that fewer than MIN_EMPIRICAL_PAIRS ordinary pairs remain (2025 to 2026 had
+  // one every few weeks), keep them in rather than fall back to the quasi-Poisson SE alone: that
+  // SE ignores week-to-week swings and, on a real small site, was 2 to 8 times too narrow. A null
+  // that includes update periods is wider, so this errs towards "not enough data".
+  let r = collect(true);
+  if (r.length < MIN_EMPIRICAL_PAIRS && excluded.length > 0) r = collect(false);
   const K = r.length;
   let seEmp: number | null = null;
   let freq: number | null = null;

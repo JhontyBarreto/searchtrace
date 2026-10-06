@@ -15,7 +15,7 @@ import { runPipelineWith } from '../../pipeline/run.js';
 import { toolVersion } from '../../pipeline/context.js';
 import { stableStringify } from '../../report/json.js';
 import { layout } from '../../store/layout.js';
-import { openStore } from '../../store/store.js';
+import { openScratchStore } from '../../store/store.js';
 import { out, parseFlags, printError, resolveDeps, resolveDir, type CliDeps } from '../prompt.js';
 
 async function prepareFolder(outFlag: string | undefined, deps: CliDeps): Promise<string> {
@@ -37,7 +37,9 @@ export async function demoCommand(args: string[], partial?: Partial<CliDeps>): P
     const { values: v } = parseFlags(args, { out: { type: 'string' }, json: { type: 'boolean' } }, 'demo');
     if (!v.json) out(deps, 'Building a demo site (Pipewell Plumbing, made up) with 16 months of history...');
     const dir = await prepareFolder(v.out, deps);
-    const store = await openStore(dir, secrets);
+    // The demo folder is throwaway, so the 490 fixture files skip fsync (the pipeline that
+    // follows uses the normal durable store for everything it writes).
+    const store = await openScratchStore(dir, secrets);
     const truth = await writeDemoFixture(store);
     if (!(await store.exists(layout.config))) {
       const cfg = defaultConfig(truth.property);

@@ -145,7 +145,8 @@ describe('analyzeChangePoints', () => {
     const f = out.findings[0];
     expect(f.template).toBe('too_recent');
     expect(f.real).toBe('underpowered');
-    expect(f.slots).toEqual({ date: cp.date, check_date: addDays(cp.date, 14) });
+    // metric, unit and direction name the series, so two too-recent changes read differently.
+    expect(f.slots).toEqual({ metric: 'clicks', unit: 'Whole site', direction: 'down', date: cp.date, check_date: addDays(cp.date, 14) });
     expect(f.falsifier).toEqual({ key: 'more_data', slots: { check_date: addDays(cp.date, 14) } });
   });
 
@@ -221,6 +222,30 @@ describe('analyzeChangePoints', () => {
     expect(out2.changePoints[0].seasonalMatch).toBe(false);
     expect(out2.findings[0].real).toBe('signal');
     expect(out2.findings[0].alternatives.map((a) => a.key)).toContain('seasonal_not_last_year');
+  });
+
+  it('a near-empty or flat last year is not "the same thing last year"', () => {
+    // Found on a real small site: a rise this July was capped as seasonal because last July had a
+    // few clicks whose noisy ratio landed inside the change's wide interval.
+    const histStart = addDays(START, -400);
+    const len = diffDays(histStart, END) + 1;
+    const offset = diffDays(histStart, START);
+    const stepAt = 120;
+    const now = (k: number, m: number): number => (k - offset >= stepAt ? m * 2 : m);
+    // Last year averages 0.3 a day: below the 1-a-day floor, so the season is not checked at all.
+    const thin = poissonSeries(testRng('cp32-thin'), dowMeans(histStart, len, 8).map((m, k) => (k < offset ? 0.3 : now(k, m))));
+    const a = analyzeChangePoints(
+      input([series('site:clicks', thin.slice(offset), { primary: true })], { historyStart: histStart, seasonalValues: { 'site:clicks': { start: histStart, values: thin } } }),
+    );
+    expect(a.changePoints[0].seasonalMatch).toBe(false);
+    expect(a.findings[0].alternatives.map((x) => x.key)).not.toContain('seasonal_same_last_year');
+    // Last year flat at 8 a day (ratio about 1): a rise now is not "the same thing".
+    const flat = poissonSeries(testRng('cp32-flat'), dowMeans(histStart, len, 8).map((m, k) => (k < offset ? m : now(k, m))));
+    const b = analyzeChangePoints(
+      input([series('site:clicks', flat.slice(offset), { primary: true })], { historyStart: histStart, seasonalValues: { 'site:clicks': { start: histStart, values: flat } } }),
+    );
+    expect(b.changePoints[0].seasonalMatch).toBe(false);
+    expect(b.findings[0].real).toBe('signal');
   });
 
   it('labels Google update overlaps and caps impressions changes during a reporting change', () => {

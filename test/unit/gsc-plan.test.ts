@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { addDays, dateRange, ptDayStart } from '../../src/core/time.js';
 import type { GscPlanState } from '../../src/core/types.js';
-import { backfillStart, effectiveIncompleteDate, monthChunks, planGsc, subtractMonths } from '../../src/sources/google/gsc-plan.js';
+import { backfillStart, effectiveIncompleteDate, monthChunks, planGsc, retentionStart, subtractMonths } from '../../src/sources/google/gsc-plan.js';
 
 const base = (o: Partial<GscPlanState> = {}): GscPlanState => ({
   today: '2026-10-06',
@@ -27,6 +27,9 @@ describe('calendar helpers', () => {
     expect(subtractMonths('2024-03-31', 1)).toBe('2024-02-29');
     expect(subtractMonths('2026-01-15', 13)).toBe('2024-12-15');
     expect(backfillStart('2026-10-06', 16)).toBe('2025-06-07');
+    expect(retentionStart('2026-10-06')).toBe('2025-06-01');
+    expect(retentionStart('2026-10-31')).toBe('2025-06-01');
+    expect(retentionStart('2026-01-01')).toBe('2024-09-01');
   });
 
   it('falls back to today minus 3 when the probe has not given F, and never goes past today', () => {
@@ -44,18 +47,20 @@ describe('calendar helpers', () => {
 });
 
 describe('planGsc (test 50)', () => {
-  it('first run: seals from today minus 16 months plus a day up to F - 1, never F or later', () => {
+  it('first run: a full backfill seals from the 1st of the month 16 months back up to F - 1, never F or later', () => {
+    // Google still serves final data a few days past "16 months" (measured: back to 2025-05-25 on
+    // 2026-10-06), so the full backfill asks from 2025-06-01, not today minus 16 months plus a day.
     const p = planGsc(base());
-    expect(p.sealDays[0]).toBe('2025-06-07');
+    expect(p.sealDays[0]).toBe('2025-06-01');
     expect(p.sealDays[p.sealDays.length - 1]).toBe('2026-10-03');
-    expect(p.sealDays).toEqual(dateRange('2025-06-07', '2026-10-03'));
+    expect(p.sealDays).toEqual(dateRange('2025-06-01', '2026-10-03'));
     expect(p.sealDays.some((d) => d >= '2026-10-04')).toBe(false);
     expect(p.revalidateDays).toEqual([]);
     expect(p.probeFrom).toBe('2026-09-26');
     expect(p.probeTo).toBe('2026-10-06');
     // One range chunk per calendar month, June 2025 to October 2026.
     expect(p.rangeChunks).toHaveLength(17);
-    expect(p.rangeChunks[0]).toEqual(['2025-06-07', '2025-06-30']);
+    expect(p.rangeChunks[0]).toEqual(['2025-06-01', '2025-06-30']);
     expect(p.rangeChunks[16]).toEqual(['2026-10-01', '2026-10-03']);
   });
 

@@ -247,6 +247,36 @@ describe.each([
   });
 });
 
+describe('bulk loads', () => {
+  it('loads many new days with the secondary indexes rebuilt afterwards, then stays incremental', async () => {
+    const store = memoryStore();
+    const days = Array.from({ length: 70 }, (_, k) => new Date(Date.UTC(2026, 0, 1 + k)).toISOString().slice(0, 10));
+    const rows = (c: number) => [
+      { s: 't', c, i: 100, ps: 500 },
+      { s: 'p', p: HOME, c, i: 100, ps: 500 },
+      { s: 'qpd', q: 'plumber near me', p: HOME, dv: 'desktop', c, i: 60, ps: 300 },
+    ];
+    for (const day of days) await store.writePartition(layout.gscDay(day), metaFor(day, 1), rows(3));
+    const path = join(dir, 'index.sqlite');
+    const db = await index(path);
+    const first = await db.sync(store);
+    expect(first.loaded).toBe(70);
+    expect(db.pageDaily(days[0], days[69], { pages: [HOME] })).toHaveLength(70);
+    expect(db.cells(days[0], days[69], { queries: ['plumber near me'] })).toHaveLength(70);
+    // The indexes dropped for the bulk load are back.
+    const raw = new DatabaseSync(path);
+    const names = (raw.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('gsc_p_pg', 'gsc_qpd_pg', 'gsc_qpd_q')").all() as { name: string }[]).map((r) => r.name).sort();
+    raw.close();
+    expect(names).toEqual(['gsc_p_pg', 'gsc_qpd_pg', 'gsc_qpd_q']);
+    // A later revision of one day is loaded on its own and replaces that day.
+    await store.writePartition(layout.gscDay(days[5], 2), metaFor(days[5], 2), rows(9));
+    const second = await db.sync(store);
+    expect(second.loaded).toBe(1);
+    expect(db.pageDaily(days[5], days[5], { pages: [HOME] })[0].c).toBe(9);
+    expect(db.siteDaily(days[0], days[69]).reduce((a, r) => a + r.c, 0)).toBe(69 * 3 + 9);
+  });
+});
+
 describe('index file handling', () => {
   it('persists on disk, survives reopening, and needs no reload when nothing changed', async () => {
     const store = await openStore(join(dir, 'data'), createSecretRegistry({ ci: false }));

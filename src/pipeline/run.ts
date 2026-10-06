@@ -309,8 +309,50 @@ const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
     }, { once: true });
   });
 
+/** A folder made by `searchtrace demo` says so in meta.json, so later runs on it keep the demo label. */
+async function isDemoFolder(ctx: RunContext): Promise<boolean> {
+  try {
+    const text = await ctx.store.readFile(layout.meta);
+    return text ? (JSON.parse(text, (k, x: unknown) => (k === '__proto__' ? undefined : x)) as { demo?: unknown }).demo === true : false;
+  } catch {
+    return false;
+  }
+}
+
+const STATUS_RANK: Record<PhaseResult['status'], number> = { skipped: 0, ok: 1, deferred: 2, partial: 3, failed: 4 };
+
+/** The run's first AI Overview collection plus every --wait poll, as one step. */
+export function mergeCollectPolls(first: PhaseResult | null, polls: PhaseResult[]): PhaseResult {
+  const all = first ? [first, ...polls] : polls;
+  const requests: Record<string, number> = {};
+  for (const p of all) for (const [k, v] of Object.entries(p.requests)) requests[k] = (requests[k] ?? 0) + v;
+  const status = all.reduce<PhaseResult['status']>((w, p) => (STATUS_RANK[p.status] > STATUS_RANK[w] ? p.status : w), 'skipped');
+  const collected = polls.reduce((n, p) => n + p.rows, 0);
+  const last = polls[polls.length - 1];
+  // The last poll says what is still outstanding; earlier "still processing" notes are out of date.
+  const outstanding = (last?.notes ?? []).filter((n) => !/^Collected /.test(n));
+  const earlier = (first?.notes ?? []).filter((n) => !/still being processed|could not be read/.test(n));
+  const notes = [...earlier, `Collected ${collected} AI Overview check${collected === 1 ? '' : 's'} while waiting.`, ...outstanding];
+  const seen = new Set<string>();
+  const errors = all.flatMap((p) => p.errors).filter((e) => (seen.has(e.message) ? false : (seen.add(e.message), true)));
+  return {
+    name: 'serp_collect',
+    status,
+    startedAt: all[0].startedAt,
+    endedAt: all[all.length - 1].endedAt,
+    requests,
+    rows: all.reduce((n, p) => n + p.rows, 0),
+    costUsd: all.reduce((n, p) => n + p.costUsd, 0),
+    partitions: all.flatMap((p) => p.partitions),
+    notes,
+    errors,
+  };
+}
+
 async function fullRun(ctx: RunContext, o: PipelineInput): Promise<RunSummary> {
   const st: RunState = { phases: [], out: null, reportPath: null, graphPath: null };
+  // The demo label is part of findings.json, so a re-run on the demo folder must keep it (D24).
+  const demo = o.demo ?? (await isDemoFolder(ctx));
   const push = (r: PhaseResult): PhaseResult => {
     st.phases.push(r);
     return r;
@@ -342,9 +384,9 @@ async function fullRun(ctx: RunContext, o: PipelineInput): Promise<RunSummary> {
       if (!ctx.google) throw authError ?? new StError('auth', 'No Google credential is available.', 'Run `npx searchtrace setup`, or pass --credentials <file>.');
     };
 
-    push(f.offline
-      ? skippedPhase('updates', ctx, 'Offline: using the saved and bundled list of Google updates.')
-      : await boundary(ctx, 'updates', () => collect(ctx, updatesCollector), on));
+    // The updates collector decides for itself (plan.skip): offline it fetches nothing but still
+    // stores the bundled list once, so the index, the graph and doctor see Google's updates.
+    push(await boundary(ctx, 'updates', () => collect(ctx, updatesCollector), on));
     push(f.offline
       ? skippedPhase('gsc', ctx, 'Offline: no new Search Console data fetched.')
       : await boundary(ctx, 'gsc', async () => {
@@ -394,12 +436,13 @@ async function fullRun(ctx: RunContext, o: PipelineInput): Promise<RunSummary> {
       posted = r.status !== 'skipped' && r.status !== 'failed' && (r.costUsd > 0 || Object.keys(r.requests).length > 0);
     }
 
-    push(await boundary(ctx, 'report', () => reportPhase(ctx, st, o.demo ?? false), on));
+    push(await boundary(ctx, 'report', () => reportPhase(ctx, st, demo), on));
     push(await boundary(ctx, 'graph', () => graphPhase(ctx, st), on));
 
     if (posted && f.waitMinutes > 0) {
       const sleep = o.sleep ?? defaultSleep;
       const rounds = Math.max(1, Math.ceil((f.waitMinutes * 60_000) / WAIT_POLL_MS));
+      const polls: PhaseResult[] = [];
       for (let i = 0; i < rounds; i++) {
         try {
           await sleep(WAIT_POLL_MS, ctx.signal);
@@ -408,12 +451,29 @@ async function fullRun(ctx: RunContext, o: PipelineInput): Promise<RunSummary> {
         }
         const plan = await serpCollectCollector.plan(ctx).catch(() => null);
         if (!plan || plan.skip || plan.payload.pendingTaskIds.length === 0) break;
-        push(await boundary(ctx, 'serp_collect', () => serpCollectCollector.execute(plan, ctx)));
+        polls.push(await boundary(ctx, 'serp_collect', () => serpCollectCollector.execute(plan, ctx)));
       }
-      push(await boundary(ctx, 'index', () => syncPhase(ctx)));
-      push(await boundary(ctx, 'analyze', () => analyzePhase(ctx, st, { write: true })));
-      push(await boundary(ctx, 'report', () => reportPhase(ctx, st, o.demo ?? false)));
-      push(await boundary(ctx, 'graph', () => graphPhase(ctx, st)));
+      // One row per step in the summary and the report's run ledger: the polls fold into the
+      // run's "AI Overview results" step, and the refreshed analysis, report and graph replace the
+      // earlier ones (the report shows their final state). A poll every 30 s for 20 minutes would
+      // otherwise add 40 near-identical rows.
+      if (polls.length) {
+        const k = st.phases.findIndex((p) => p.name === 'serp_collect');
+        const merged = mergeCollectPolls(k >= 0 ? st.phases[k] : null, polls);
+        if (k >= 0) st.phases[k] = merged;
+        else push(merged);
+      }
+      const replace = (r: PhaseResult): PhaseResult => {
+        const k = st.phases.findIndex((p) => p.name === r.name);
+        if (k >= 0) st.phases[k] = r;
+        else st.phases.push(r);
+        return r;
+      };
+      const sync = await boundary(ctx, 'index', () => syncPhase(ctx));
+      if (sync.status === 'failed') push(sync);
+      replace(await boundary(ctx, 'analyze', () => analyzePhase(ctx, st, { write: true })));
+      replace(await boundary(ctx, 'report', () => reportPhase(ctx, st, demo)));
+      replace(await boundary(ctx, 'graph', () => graphPhase(ctx, st)));
     }
 
     const result = summary(ctx, st, null);

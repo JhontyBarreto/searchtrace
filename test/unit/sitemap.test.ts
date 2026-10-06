@@ -2,7 +2,6 @@
 import { gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { request } from '../../src/http/request.js';
-import { gunzipBodies } from '../../src/sources/crawl/fetcher.js';
 import { decodeXmlText, parseSitemapXml } from '../../src/sources/crawl/sitemap.js';
 import { fakeFetch } from '../helpers/index.js';
 
@@ -78,14 +77,14 @@ describe('gzipped sitemaps through request()', () => {
 
   it('decompresses an .xml.gz body served without Content-Encoding', async () => {
     const ff = fakeFetch([{ url: 'https://example.com/s.xml.gz', reply: { headers: { 'content-type': 'application/gzip' }, body: new Uint8Array(gzipSync(xml)) } }]);
-    const res = await request(gunzipBodies(ff.fetch), { url: 'https://example.com/s.xml.gz', retry: false });
+    const res = await request(ff.fetch, { url: 'https://example.com/s.xml.gz', retry: false, gunzip: true });
     expect(res.text).toBe(xml);
     expect(parseSitemapXml(res.text).entries[0].loc).toBe('https://example.com/gz');
   });
 
   it('passes plain bodies through untouched', async () => {
     const ff = fakeFetch([{ url: 'https://example.com/s.xml', reply: { headers: { 'content-type': 'application/xml' }, body: xml } }]);
-    const res = await request(gunzipBodies(ff.fetch), { url: 'https://example.com/s.xml', retry: false });
+    const res = await request(ff.fetch, { url: 'https://example.com/s.xml', retry: false, gunzip: true });
     expect(res.text).toBe(xml);
   });
 
@@ -93,8 +92,23 @@ describe('gzipped sitemaps through request()', () => {
     const bomb = gzipSync(Buffer.alloc(20_000_000, 0x41));
     expect(bomb.length).toBeLessThan(100_000);
     const ff = fakeFetch([{ url: 'https://example.com/bomb.xml.gz', reply: { body: new Uint8Array(bomb) } }]);
-    const res = await request(gunzipBodies(ff.fetch), { url: 'https://example.com/bomb.xml.gz', retry: false, maxBytes: 1_000_000 });
+    const res = await request(ff.fetch, { url: 'https://example.com/bomb.xml.gz', retry: false, maxBytes: 1_000_000, gunzip: true });
     expect(res.truncated).toBe(true);
     expect(res.text.length).toBe(1_000_000);
+  });
+
+  it('leaves gzip bytes alone unless gunzip is asked for', async () => {
+    const ff = fakeFetch([{ url: 'https://example.com/s.xml.gz', reply: { headers: { 'content-type': 'application/gzip' }, body: new Uint8Array(gzipSync(xml)) } }]);
+    const res = await request(ff.fetch, { url: 'https://example.com/s.xml.gz', retry: false });
+    expect(res.text).not.toBe(xml);
+  });
+
+  it('marks a corrupt gzip body as cut short instead of throwing', async () => {
+    const good = gzipSync(xml);
+    const broken = new Uint8Array(good.subarray(0, Math.floor(good.length / 2)));
+    const ff = fakeFetch([{ url: 'https://example.com/broken.xml.gz', reply: { body: broken } }]);
+    const res = await request(ff.fetch, { url: 'https://example.com/broken.xml.gz', retry: false, gunzip: true });
+    expect(res.truncated).toBe(true);
+    expect(parseSitemapXml(res.text).entries).toEqual([]);
   });
 });

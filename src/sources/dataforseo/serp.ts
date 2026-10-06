@@ -310,7 +310,8 @@ async function balanceOf(client: DfsClient): Promise<number | null> {
  * language baked into every intent key of the week, so a mid-week change of top country or
  * config cannot produce intent keys that no longer match the design.
  */
-export type StoredDesign = DesignEvent & { location?: { locationCode: number; languageCode: string } };
+/** The design ledger record; `location` (now part of SpendEvent) pins the week's Google location and language. */
+export type StoredDesign = DesignEvent;
 
 function designRecord(
   ctx: RunContext, week: string, budgetUsd: number, mode: 'census' | 'sample', units: ReturnType<typeof designSample>['units'],

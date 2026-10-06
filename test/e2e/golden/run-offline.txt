@@ -1,0 +1,33 @@
+searchtrace 0.1.0 · sc-domain:pipewell-plumbing.example
+Data runs to 3 Oct 2026 (Pacific Time). The last 3 days are still being finalised by Google, so they're left out.
+
+Collecting
+  Google updates        59 known, 0 new · Offline: used the bundled list of Google updates.
+  Search Console        Offline: no new Search Console data fetched.
+  Your pages            Offline: pages not checked.
+  Index checks          Offline: no index checks.
+  AI Overview checks    off · add a DataForSEO login to turn on
+
+The answer
+  In the last 28 days Google sent you 34,725 clicks, 3,037 fewer than the 28 days before (-8%).
+  This is normal wobble. Clicks moved -8%, and swings this size happen about 1 in 6 four-week
+  periods in your history. Across the whole site that's nothing to act on, but parts of it did
+  change.
+
+Also worth knowing
+  · Real change: clicks on /blog/* dropped by 18% around 15 Sep 2026
+  · Real change: this is a real drop, and it most likely came from a change on your site. 27 of the
+    40 pages you changed on 9 Sep 2026 (new titles, for example "How Much to Fix a Radiator |
+    Pipewell Plumbing" became "How Much to Fix a Radiator - Pipewell Plumbing") lost clicks. Google
+    recrawled them between 9 Sep 2026 and 15 Sep 2026, and the drop started right after. Pages you
+    didn't touch held steady (+2.6%). Confidence: high · Why: Your change (Estimated)
+  · Real change: people clicked less even though you ranked in the same place. On searches where
+    Google now shows an AI Overview that doesn't cite you, your click rate fell 29% more than on
+    similar searches without one (likely range 24% to 34%). This is an estimate: Google doesn't
+    report clicks lost to AI Overviews · Why: AI Overview (Estimated)
+  · Google hides the exact searches behind 36% of your clicks. Page-level numbers include
+    everything.
+
+Report   file://<DATA>/reports/latest.html
+Why      npx searchtrace why
+Graph    searchtrace-data/graphify-out/graph.json (1,080 nodes) · ask it in Claude: see docs/GRAPHIFY.md

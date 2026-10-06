@@ -1,6 +1,7 @@
 // Tests 34 to 39: site-change attribution (stacked DiD with calendar-matched controls).
 import { describe, expect, it } from 'vitest';
-import { analyzeSiteChanges, seenDay, windowsFor } from '../../src/analyze/site-change.js';
+import { MIN_POST_DAYS, analyzeSiteChanges, postDaysFor, seenDay, windowsFor } from '../../src/analyze/site-change.js';
+import { renderSentence } from '../../src/report/copy.js';
 import { rngFor } from '../../src/core/rng.js';
 import { addDays, dateRange, ptDayStart } from '../../src/core/time.js';
 import type { Cell, CtrCurve, GoogleEvent, IsoDate, PageDay, SiteChange, SiteChangeInput, TouchedUrl } from '../../src/core/types.js';
@@ -178,7 +179,11 @@ describe('site-change attribution', () => {
     expect(all.impacts[0]).toMatchObject({ controls: 0, tau: null, real: 'unclear', synthesis: 'unclear' });
     const g = all.findings.find((x) => x.id === all.impacts[0].findingId);
     expect(g).toMatchObject({ template: 'cant_separate', reason: 'identification', causeConfidence: 'AMBIGUOUS' });
-    expect(g?.slots.reason_text).toBe('coverage');
+    // The failed check travels as `check`; the report words it, never printing the raw keyword.
+    expect(g?.slots.check).toBe('coverage');
+    const sentence = renderSentence('cant_separate', g?.slots ?? {});
+    expect(sentence).toContain('too few comparable searches were checked');
+    expect(sentence).not.toMatch(/\bcoverage\b/);
   });
 
   it('38: a control whose inlinks from treated pages changed is excluded', () => {
@@ -197,10 +202,32 @@ describe('site-change attribution', () => {
     expect(out.findings.find((f) => f.kind === 'site_change_impact')?.date).toBe(addDays(X, 1));
   });
 
-  it('reports too-recent changes with a check date', () => {
+  it('reports too-recent changes with the date they can first be measured', () => {
+    // Under 14 post-window days for every page: too recent. The check date is the day the last-seen
+    // page reaches 14 post days (seen on d, post window from d + 3, so d + 16).
     const out = analyzeSiteChanges(input(s34, [change(touched(blog(20)))], { dataThrough: addDays(X, 10) }));
     const f = out.findings.find((x) => x.kind === 'site_change_impact');
-    expect(f).toMatchObject({ template: 'too_recent', real: 'underpowered', slots: { date: dayOf(0), check_date: addDays(dayOf(2), 30) } });
+    expect(f).toMatchObject({ template: 'too_recent', real: 'underpowered', slots: { date: dayOf(0), check_date: addDays(dayOf(2), 3 + MIN_POST_DAYS - 1) } });
+  });
+
+  it('measures on a post window cut short by the data, once it holds 14 days', () => {
+    expect(postDaysFor('2026-09-12', '2026-10-03')).toBe(19);
+    expect(postDaysFor('2026-09-23', '2026-10-03')).toBe(8);
+    expect(postDaysFor('2026-08-01', '2026-10-03')).toBe(28);
+    // Both windows shrink to the 19 days the post window has, so every ratio compares like with like.
+    expect(windowsFor('2026-09-12', false, 0, 19)).toEqual({ pre: ['2026-08-24', '2026-09-11'], post: ['2026-09-15', '2026-10-03'] });
+    // Data through X + 20: the pages seen on X + 1 to X + 3 have 18 to 16 post days, so they are measured.
+    const s = site({ groups: [{ tpl: 'blog', n: 60 }], treated: isTreated(20), effect: -0.3, updateEffect: 0, seed: 'short' });
+    const out = analyzeSiteChanges(input(s, [change(touched(blog(20)))], { events: [], dataThrough: addDays(X, 20) }));
+    const [impact] = out.impacts;
+    expect(impact.treated).toBe(20);
+    expect(impact.synthesis).toBe('site_change');
+    expect(impact.tau).toBeGreaterThan(-0.38);
+    expect(impact.tau).toBeLessThan(-0.22);
+    // Untouched pages are flat: equal-length windows keep their change near 0.
+    expect(Math.abs(impact.controlChange ?? 1)).toBeLessThan(0.05);
+    const f = out.findings.find((x) => x.id === impact.findingId);
+    expect(f?.verify?.to).toBe(addDays(X, 20));
   });
 
   it('dates annotation changes Google has not been seen on at date + 3, and keeps them AMBIGUOUS', () => {

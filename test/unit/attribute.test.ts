@@ -31,7 +31,7 @@ function facts(bars: Partial<Bars>, over: Partial<ScopeFacts> = {}, ci?: Partial
   return {
     unit: d.unit, decomposition: d,
     groupCi: { demand: tight(g.demand), ranking: tight(g.ranking), samePos: tight(g.samePos), aioCitation: tight(g.aioCitation), churn: tight(g.churn), ...ci },
-    pages: new Set(['https://x.example/blog/a', 'https://x.example/blog/b']), baseImpressions: 50_000, curImpressions: 50_000 * (1 + b.demand / 1000),
+    pages: new Set(['https://x.example/blog/a', 'https://x.example/blog/b']), movedPages: new Set(['https://x.example/blog/a']), baseImpressions: 50_000, curImpressions: 50_000 * (1 + b.demand / 1000),
     pb: 4.2, pc: 4.3, ctrB: 0.02, ctrC: 0.018, movedSearches: 3, checkedShare: 0, aioUncitedShare: 0, checkedQueries: 0, aioQueries: 0, candidates: 12,
     kFallback: false, unstableShare: 0, topSegment: '/blog/a', yoy: null, p: 0.001, q: 0.01, floorsMet: true, delta: 0.1, phi: 1.2,
     impressions: { tau: 0.01, real: 'noise' }, ...over,

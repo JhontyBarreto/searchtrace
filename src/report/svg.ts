@@ -102,16 +102,22 @@ export function timelineSvg(out: AnalysisOutput): string {
       if (end < first || row.begin > last) continue;
       const x1 = x(clamp(row.begin));
       const x2 = Math.max(x1 + 2, x(clamp(end)));
-      const what = `${row.title} (${fmtDate(row.begin)} to ${row.end ? fmtDate(row.end) : 'ongoing'}${row.endEstimated ? ', end estimated' : ''})`;
+      const span = row.end === row.begin ? fmtDate(row.begin) : `${fmtDate(row.begin)} to ${row.end ? fmtDate(row.end) : 'ongoing'}`;
+      const what = `${row.title} (${span}${row.endEstimated ? ', end estimated' : ''})`;
       parts.push(`<rect class="band ${cls}" x="${n1(x1)}" y="${panel.top}" width="${n1(x2 - x1)}" height="${PH}"><title>${esc(what)}</title></rect>`);
     }
 
-    // Change-point windows and markers for site-level series of this metric.
+    // Change-point windows and markers for the whole-site series of this metric (all devices: the
+    // panel plots the total). Changes judged normal wobble or too thin to call are not drawn.
     for (const cp of out.changePoints) {
-      if (cp.unit.level !== 'site' || cp.metric !== panel.metric || !inRange(cp.date)) continue;
+      if (cp.unit.level !== 'site' || cp.unit.device || cp.metric !== panel.metric || !inRange(cp.date)) continue;
+      const f = out.findings.find((x) => x.kind === 'change_point' && x.slots?.date === cp.date &&
+        x.evidence.some((e) => (e.key as Record<string, unknown> | undefined)?.series === cp.seriesId));
+      if (f && (f.real === 'noise' || f.real === 'underpowered')) continue;
       const wx1 = x(clamp(cp.dateWindow[0]));
       const wx2 = Math.max(wx1 + 1, x(clamp(cp.dateWindow[1])));
-      const label = `Change detected around ${fmtDate(cp.date)} (likely ${fmtDate(cp.dateWindow[0])} to ${fmtDate(cp.dateWindow[1])})`;
+      const likely = cp.dateWindow[0] === cp.dateWindow[1] ? '' : ` (likely ${fmtDate(cp.dateWindow[0])} to ${fmtDate(cp.dateWindow[1])})`;
+      const label = `Change detected around ${fmtDate(cp.date)}${likely}`;
       parts.push(`<rect class="cp-window" x="${n1(wx1)}" y="${panel.top}" width="${n1(wx2 - wx1)}" height="${PH}"><title>${esc(label)}</title></rect>`);
       parts.push(`<line class="cp-line" x1="${n1(x(cp.date))}" y1="${panel.top}" x2="${n1(x(cp.date))}" y2="${panel.top + PH}"/>`);
     }
@@ -176,7 +182,7 @@ export function timelineLegend(): string {
 
 /** Horizontal bars for the waterfall display groups, with 95% whiskers when known. */
 export function waterfallSvg(scope: ScopeDecomposition): string {
-  const rows = displayGroups(scope.bars, scope.ci95 as Record<string, [number, number]> | null);
+  const rows = displayGroups(scope.bars, scope.ci95);
   const total = { label: 'Total change', value: scope.deltaClicks, ci: scope.ci95?.total ?? null };
   const all = [...rows, { group: 'total', ...total }];
   const W = 640;

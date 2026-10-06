@@ -9,7 +9,7 @@ import { affordableChecks, availableBudget, budgetFor } from '../../src/sources/
 import { createDfsClient, dfsDatetime, parseDfsDatetime, PATHS } from '../../src/sources/dataforseo/client.js';
 import { locationForCountry, locationTable, resolveLocation } from '../../src/sources/dataforseo/locations.js';
 import { collectRefs, normalizeSerp, stripWww } from '../../src/sources/dataforseo/normalize.js';
-import { designSample, eligibleCandidates, expectedDesignCost, PI_MIN, scaledInclusion, weekdayFor } from '../../src/sources/dataforseo/sample.js';
+import { designSample, eligibleCandidates, expectedDesignCost, hasSearchOperator, PI_MIN, scaledInclusion, weekdayFor } from '../../src/sources/dataforseo/sample.js';
 import { fakeFetch } from '../helpers/index.js';
 
 // ---------- locations ----------
@@ -209,6 +209,15 @@ describe('designSample (test 63)', () => {
     expect(d.units).toHaveLength(206);
     expect(d.units.every((u) => u.pi === 1 && u.design === 'census')).toBe(true);
     expect(expectedDesignCost(d.units, 0.0012)).toBeLessThanOrEqual(0.3);
+  });
+
+  it('leaves out searches with Google search operators (billed at 5x), but keeps quoted phrases', () => {
+    const mk = (keyword: string): SerpCandidate => ({ keyword, device: 'desktop', pbar: 3, impressions: 50, expectedBaseClicks: 2, deltaClicks: 0, pages: [] } as unknown as SerpCandidate);
+    const kept = eligibleCandidates(['site:example.com', 'seo inurl:blog', '-site:x.com tips', 'intitle:guide seo', 'seo AROUND(3) agency', '"seo agency" london', 'what is a site map', 'website: tips']
+      .map(mk)).map((x) => x.keyword);
+    expect(kept).toEqual(['"seo agency" london', 'website: tips', 'what is a site map']);
+    expect(hasSearchOperator('site:example.com')).toBe(true);
+    expect(hasSearchOperator('my site: review')).toBe(false);
   });
 
   it('filters ineligible candidates: position over 20, under 10 impressions, duplicates', () => {

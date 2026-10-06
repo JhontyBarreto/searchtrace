@@ -81,10 +81,13 @@ function config(): Config {
   return { ...c, analysis: { ...c.analysis, bootstrap: { waterfall: 200, aio: 200, did: 200 } } };
 }
 
-function input(site: Site): AnalysisInput {
+function input(site: Site, extra: Partial<Parameters<typeof memoryIndex>[0]> = {}): AnalysisInput {
   return {
     property: PROPERTY, siteDomain: 'acme-heating.example', dataThrough: D, config: config(), siteChanges: [], siteName: 'Acme Heating',
-    db: memoryIndex({ property: PROPERTY, t: site.t, td: site.td, p: site.p, qpd: site.qpd, events: site.events, freshT: [{ date: '2026-10-04', c: 3, i: 90, ps: 500 }] }),
+    db: memoryIndex({
+      property: PROPERTY, t: site.t, td: site.td, p: site.p, qpd: site.qpd, events: site.events, freshT: [{ date: '2026-10-04', c: 3, i: 90, ps: 500 }],
+      ...extra,
+    }),
   };
 }
 
@@ -130,7 +133,8 @@ describe('runAnalysis over a memory index', () => {
     expect(notices).toEqual(['coverage', 'freshness', 'no_site_changes']);
     const coverage = out.findings.find((f) => f.template === 'coverage');
     expect(Number(coverage?.slots.hidden) + Number(coverage?.slots.shown)).toBeCloseTo(1, 12);
-    expect(out.findings.find((f) => f.template === 'freshness')?.slots).toEqual({ date: D, n: 1 });
+    // No day count: it would come from the provisional tail in state/, which is not an input (D24).
+    expect(out.findings.find((f) => f.template === 'freshness')?.slots).toEqual({ date: D });
     for (const f of out.findings) {
       expect(TEMPLATE_IDS).toContain(f.template);
       for (const v of Object.values(f.slots)) expect(typeof v === 'string' || Number.isFinite(v)).toBe(true);
@@ -188,6 +192,15 @@ describe('runAnalysis over a memory index', () => {
     expect(JSON.parse(a).inputs_hash).toBe(out.inputsHash);
   }, 60_000);
 
+  it('gives the same findings.json without the provisional tail (state/ cleared, 10.3 step 7)', () => {
+    // Found on the real property: the freshness notice counted provisional days from
+    // state/gsc-fresh.ndjson.gz, so deleting state/ changed one sentence in findings.json.
+    const ctx = { toolVersion: '0.1.0', config: config(), run: null, demo: false };
+    const withTail = renderReports(runAnalysis(input(site)), ctx).json;
+    const noTail = renderReports(runAnalysis(input(site, { freshT: [], freshTd: [] })), ctx).json;
+    expect(noTail).toBe(withTail);
+  }, 60_000);
+
   it('reports which analyzers were skipped (none, once every package has landed)', () => {
     const { skipped } = runAnalysisDetailed(input(site));
     expect(Array.isArray(skipped)).toBe(true);
@@ -220,4 +233,35 @@ describe('runAnalysis edge cases', () => {
     expect(out.diagnostics.historyDays).toBe(21);
     for (const s of out.scopes) expect(Math.abs(barsTotal(s.bars) - s.deltaClicks)).toBeLessThan(1e-6);
   }, 60_000);
+});
+
+describe('headline.boring across re-runs of the same data', () => {
+  // A quiet site (guides -10%, inside normal wobble) whose only news is one page leaving Google's
+  // index: a new signal, so the run is not boring. The pipeline then saves the findings with
+  // meta.day = dataThrough; analysing the same data again must not call it boring.
+  const site = synthSite('analysis:boring', 0.9);
+  const page = `${ORIGIN}guides/guide-1`;
+  const inspections = [
+    { url: page, inspectedAt: '2026-09-20T10:00:00Z', reason: 'traffic' as const, verdict: 'PASS', coverageState: 'Submitted and indexed' },
+    { url: page, inspectedAt: '2026-10-01T10:00:00Z', reason: 'traffic' as const, verdict: 'NEUTRAL', coverageState: 'Crawled - currently not indexed' },
+  ];
+  const first = runAnalysis(input(site, { inspections }));
+
+  it('is not boring the first time a real change is reported', () => {
+    expect(first.headline.clicks.real).toBe('noise');
+    expect(first.findings.some((f) => f.kind === 'index_transition' && f.real === 'signal')).toBe(true);
+    expect(first.headline.boring).toBe(false);
+  });
+
+  it('gives the same answer and the same findings.json when the same data day is analysed again', () => {
+    const again = runAnalysis(input(site, { inspections, findings: [{ reportedOn: D, findings: first.findings }] }));
+    expect(again.headline.boring).toBe(first.headline.boring);
+    const ctx = { toolVersion: '0.1.0', config: config(), run: null, demo: false };
+    expect(renderReports(again, ctx).json).toBe(renderReports(first, ctx).json);
+  });
+
+  it('is boring once that change was already reported for an earlier data day', () => {
+    const later = runAnalysis(input(site, { inspections, findings: [{ reportedOn: addDays(D, -1), findings: first.findings }] }));
+    expect(later.headline.boring).toBe(true);
+  });
 });

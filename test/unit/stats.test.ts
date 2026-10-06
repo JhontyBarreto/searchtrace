@@ -623,6 +623,33 @@ describe('periodCompare (test 21)', () => {
     expect(e.se).toBeCloseTo(Math.sqrt(2 / 1400), 14);
   });
 
+  it('keeps update windows in the null when excluding them would leave fewer than 8 pairs', () => {
+    // Excluding weeks 1 to 16 removes every historical pair, so the null falls back to all 17 pairs
+    // (the same answer as no exclusions) instead of the much narrower quasi-Poisson SE.
+    const e = periodCompare({ ...base, exclude: [[day(7), day(118)]] });
+    expect(e.seSource).toBe('empirical');
+    expect(e.se).toBeCloseTo(0.22239, 10);
+    expect(e.freq).toBeCloseTo(6 / 17, 14);
+    // With 8 or more ordinary pairs left, the exclusions still apply (5 of 15, as above).
+    expect(periodCompare({ ...base, exclude: [[day(14), day(20)]] }).freq).toBeCloseTo(5 / 15, 14);
+  });
+
+  it('ignores historical pairs whose windows fall below the floor', () => {
+    // Weeks 1 to 9 hover around 3 a day (21 a week, under the floor of 30) with wild swings; weeks 10
+    // to 17 are calm at 100 a day. Only the calm pairs (both windows >= 30) describe normal wobble here.
+    const quiet = [3, 1, 4, 1, 5, 2, 6, 1, 3].map((v) => Array(7).fill(v) as number[]).flat();
+    const calm = Array(140 - quiet.length).fill(100) as number[];
+    for (let t = 133; t < 140; t++) calm[t - quiet.length] = 80;
+    const e = periodCompare({ ...base, values: [...quiet, ...calm] });
+    expect(e.freq).toBe(0);
+    expect(e.seSource).toBe('quasi_poisson');
+    expect(e.se).toBeCloseTo(Math.sqrt(1 / 700 + 1 / 560), 14);
+    // With floor 0 the quiet weeks count and their swings dominate the spread.
+    const loose = periodCompare({ ...base, values: [...quiet, ...calm], floor: 0 });
+    expect(loose.seSource).toBe('empirical');
+    expect(loose.se).toBeGreaterThan(0.1);
+  });
+
   it('applies the floor and the phi scaling', () => {
     const thin = Array(140).fill(2) as number[];
     const e = periodCompare({ ...base, values: thin });

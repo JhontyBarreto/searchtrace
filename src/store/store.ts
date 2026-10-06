@@ -195,7 +195,8 @@ async function fsyncDir(dir: string): Promise<void> {
 const toPosix = (p: string): string => p.split(sep).join('/');
 
 class DiskBackend implements StoreBackend {
-  constructor(readonly root: string) {}
+  /** durable: fsync every file and its folder (real data). Off only for throwaway folders (openScratchStore). */
+  constructor(readonly root: string, private readonly durable = true) {}
 
   private abs(rel: string): string {
     return resolveInside(this.root, rel);
@@ -238,7 +239,7 @@ class DiskBackend implements StoreBackend {
     const fh = await open(tmp, 'wx');
     try {
       await fh.writeFile(data);
-      await fh.sync();
+      if (this.durable) await fh.sync();
     } catch (e) {
       await fh.close().catch(() => undefined);
       await rm(tmp, { force: true });
@@ -251,7 +252,7 @@ class DiskBackend implements StoreBackend {
       await rm(tmp, { force: true });
       throw e;
     }
-    await fsyncDir(dirname(abs));
+    if (this.durable) await fsyncDir(dirname(abs));
   }
 
   async appendLine(rel: string, line: string): Promise<void> {
@@ -348,6 +349,19 @@ export async function sweepTmpFiles(root: string, now: number = Date.now(), maxA
 }
 
 export async function openStore(root: string, secrets: SecretRegistry): Promise<DataStore> {
+  return openDiskStore(root, secrets, true);
+}
+
+/**
+ * A store for throwaway folders (the demo): the same semantics as openStore (atomic rename,
+ * immutability, secret guard), but files are not fsynced, so a power cut can lose the most
+ * recent writes. Never use it for a real data folder; nothing else in searchtrace opens one.
+ */
+export async function openScratchStore(root: string, secrets: SecretRegistry): Promise<DataStore> {
+  return openDiskStore(root, secrets, false);
+}
+
+async function openDiskStore(root: string, secrets: SecretRegistry, durable: boolean): Promise<DataStore> {
   const abs = resolve(root);
   await mkdir(abs, { recursive: true });
   try {
@@ -356,5 +370,5 @@ export async function openStore(root: string, secrets: SecretRegistry): Promise<
     throw new StError('config', `The data folder is not a folder: ${abs}`, 'Point --dir at a folder (it is created when missing).');
   }
   await sweepTmpFiles(abs);
-  return createDataStore(new DiskBackend(abs), secrets);
+  return createDataStore(new DiskBackend(abs, durable), secrets);
 }

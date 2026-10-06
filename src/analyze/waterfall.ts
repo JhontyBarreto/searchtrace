@@ -13,7 +13,7 @@
 // 30 or more units also resample their units with replacement. One set of unit redraws per
 // replicate is shared by every scope, which keeps the cost at units x B instead of scopes x cells x B.
 import type {
-  AnalysisUnit, Bars, Cell, CtrCurve, Device, PageDay, Rng, ScopeDecomposition, Segment, UnitDecomposition, UnitFlag, UnitKey,
+  AnalysisUnit, BarGroup, Bars, Cell, CtrCurve, Device, PageDay, Rng, ScopeDecomposition, Segment, UnitDecomposition, UnitFlag, UnitKey,
   Windows, WindowStats,
 } from '../core/types.js';
 import { OTHER_PAGES } from '../core/templates.js';
@@ -504,13 +504,12 @@ export function bootstrapScopes(model: WaterfallModel, units: UnitDecomposition[
       series.ranking.push(adj(point.rank + point.visibility, sums[s][1][b] + sums[s][2][b]));
       series.churn.push(adj(point.appeared + point.disappeared, sums[s][4][b] + sums[s][5][b]));
     }
-    // Per-bar CIs plus the two display groups that are sums of bars (ranking, churn). The frozen
-    // ScopeDecomposition type only names Bars keys and 'total'; the group keys ride along at runtime
-    // so the report can draw their whiskers (report/copy.ts displayGroups reads them).
-    const ci95: Record<string, [number, number]> = {};
+    // Per-bar CIs plus the two display groups that are sums of bars (ranking, churn: BarGroup in
+    // core/types.ts), whose intervals cannot be added up from the per-bar ones.
+    const ci95: Record<keyof Bars | BarGroup | 'total', [number, number]> = {} as Record<keyof Bars | BarGroup | 'total', [number, number]>;
     for (const key of [...BAR_KEYS, 'total', 'ranking', 'churn'] as const) ci95[key] = percentileCi(series[key]);
     return {
-      ci95: ci95 as Partial<Record<keyof Bars | 'total', [number, number]>>,
+      ci95,
       groupCi: {
         demand: ci95.demand,
         ranking: ci95.ranking,

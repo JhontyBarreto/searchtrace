@@ -8,6 +8,8 @@
 // - pageDaily and cells are sparse and sorted (date, then page; date, query, page, device).
 // - revisions() lists every sealed day with the revision in use (1 unless `revisions` says otherwise).
 // - partitionsUsed() defaults to one synthetic entry per non-empty input, hashed from its content.
+//   Like the real index, it leaves out findings (each run's output must not seed the next run)
+//   and the provisional tail (state/gsc-fresh.ndjson.gz).
 import { sha256Hex } from '../../src/core/ids.js';
 import { addDays, dateRange, ptDate } from '../../src/core/time.js';
 import type {
@@ -100,7 +102,7 @@ export function memoryIndex(i: MemoryIndexInput): IndexReader {
   const partitions =
     i.partitions ??
     (Object.entries(i) as [string, unknown][])
-      .filter(([k, v]) => k !== 'partitions' && k !== 'property' && v !== undefined && v !== null && !(Array.isArray(v) && v.length === 0))
+      .filter(([k, v]) => !['partitions', 'property', 'findings', 'freshT', 'freshTd'].includes(k) && v !== undefined && v !== null && !(Array.isArray(v) && v.length === 0))
       .map(([k, v]) => ({
         path: `memory/${k}`,
         sha256: sha256Hex(JSON.stringify(v instanceof Map ? [...v.entries()] : v)),

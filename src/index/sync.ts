@@ -28,7 +28,7 @@ import { layout, parseGscDayPath } from '../store/layout.js';
 import { parseLedgerText } from '../store/ledger.js';
 import { decodeNdjsonGz, parseJsonSafe } from '../store/ndjson.js';
 import { isLocalDataStore } from '../store/store.js';
-import type { SqlDb } from './db.js';
+import { BULK_INDEXES, type SqlDb } from './db.js';
 
 export interface SyncResult {
   loaded: number;
@@ -54,6 +54,15 @@ const SRC_TABLES: Partial<Record<Kind, string[]>> = {
   findings: [],
 };
 const GSC_TABLES = ['gsc_t', 'gsc_td', 'gsc_tc', 'gsc_p', 'gsc_qpd'];
+/**
+ * Sealed days are read and decoded this many at a time (gunzip runs off the main thread) and
+ * committed in one transaction per batch: a fresh 16-month load commits about 16 times instead
+ * of about 490, which is most of its cost on disk. The index is disposable and every load is
+ * idempotent, so a crash mid-sync only means the next sync reloads the uncommitted days.
+ */
+const DAY_BATCH = 32;
+/** With at least this many never-loaded days, the secondary GSC indexes are rebuilt after the load. */
+const BULK_LOAD_DAYS = 60;
 
 interface KnownRow {
   path: string;
@@ -370,32 +379,53 @@ export async function syncIndex(db: SqlDb, store: DataStore): Promise<SyncResult
   const activeByDay = new Map<string, KnownRow>();
   for (const row of known.values()) if (row.kind === 'gsc_day' && row.active === 1 && row.day) activeByDay.set(row.day, row);
 
-  for (const [day, list] of [...days.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
-    list.sort((a, b) => a.revision - b.revision);
-    const top = list[list.length - 1];
-    const current = activeByDay.get(day);
-    const read = await readFileRef(store, top.ref);
-    if (current && current.path === top.ref.path && current.sha256 === read.sha256) {
-      result.skipped++;
-    } else {
-      const { meta, rows } = await decode(store, top.ref, read.bytes);
-      const truncated = Object.values(meta.slices ?? {}).some((s) => s?.truncated === true);
+  const dayList = [...days.entries()].sort(([a], [b]) => (a < b ? -1 : 1));
+  const bulk = dayList.filter(([day]) => !activeByDay.has(day)).length >= BULK_LOAD_DAYS;
+  if (bulk) for (const ix of BULK_INDEXES) db.exec(`DROP INDEX IF EXISTS ${ix.name}`);
+  try {
+    await loadDays();
+  } finally {
+    // Always put the indexes back, even when a corrupt file stops the load half way.
+    if (bulk) for (const ix of BULK_INDEXES) db.exec(ix.ddl);
+  }
+
+  async function loadDays(): Promise<void> {
+    for (let k = 0; k < dayList.length; k += DAY_BATCH) {
+      const batch = await Promise.all(dayList.slice(k, k + DAY_BATCH).map(async ([day, list]) => {
+        list.sort((a, b) => a.revision - b.revision);
+        const top = list[list.length - 1];
+        const current = activeByDay.get(day);
+        const read = await readFileRef(store, top.ref);
+        const unchanged = current !== undefined && current.path === top.ref.path && current.sha256 === read.sha256;
+        const decoded = unchanged ? null : await decode(store, top.ref, read.bytes);
+        // Lower revisions are recorded as inactive (hashed once, then remembered).
+        const lowers: { path: string; revision: number; sha256: string | null }[] = [];
+        for (const lower of list.slice(0, -1)) {
+          const known1 = known.get(lower.ref.path);
+          lowers.push({ path: lower.ref.path, revision: lower.revision, sha256: !known1 || known1.active !== 0 ? (await readFileRef(store, lower.ref)).sha256 : null });
+        }
+        return { day, top, read, decoded, lowers };
+      }));
       tx(db, () => {
-        deleteGscDay(db, day);
-        insertGscRows(db, interner, day, rows);
-        db.prepare("UPDATE partitions SET active = 0 WHERE kind = 'gsc_day' AND day = ?").run(day);
-        upsertPartition(db, { path: top.ref.path, sha256: read.sha256, kind: 'gsc_day', day, revision: top.revision, active: true, truncated, fetchedAt: meta.fetchedAt });
-        setProperty(db, meta.property, false);
+        for (const b of batch) {
+          if (b.decoded === null) {
+            result.skipped++;
+          } else {
+            const { meta, rows } = b.decoded;
+            const truncated = Object.values(meta.slices ?? {}).some((x) => x?.truncated === true);
+            deleteGscDay(db, b.day);
+            insertGscRows(db, interner, b.day, rows);
+            db.prepare("UPDATE partitions SET active = 0 WHERE kind = 'gsc_day' AND day = ?").run(b.day);
+            upsertPartition(db, { path: b.top.ref.path, sha256: b.read.sha256, kind: 'gsc_day', day: b.day, revision: b.top.revision, active: true, truncated, fetchedAt: meta.fetchedAt });
+            setProperty(db, meta.property, false);
+            result.loaded++;
+          }
+          for (const lower of b.lowers) {
+            if (lower.sha256 !== null) upsertPartition(db, { path: lower.path, sha256: lower.sha256, kind: 'gsc_day', day: b.day, revision: lower.revision, active: false });
+            result.skipped++;
+          }
+        }
       });
-      result.loaded++;
-    }
-    for (const lower of list.slice(0, -1)) {
-      const k = known.get(lower.ref.path);
-      if (!k || k.active !== 0) {
-        const r = await readFileRef(store, lower.ref);
-        upsertPartition(db, { path: lower.ref.path, sha256: r.sha256, kind: 'gsc_day', day, revision: lower.revision, active: false });
-      }
-      result.skipped++;
     }
   }
 

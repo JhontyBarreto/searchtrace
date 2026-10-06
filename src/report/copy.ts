@@ -8,7 +8,7 @@
 import { diffDays } from '../core/time.js';
 import type { AltKey, AnalysisOutput, Cause, Confidence, FalsifierKey, Finding, IdCheckName, TemplateId, Verdict } from '../core/types.js';
 import {
-  capitalise, confidenceLevel, fmtAbsPct, fmtCount, fmtDate, fmtFreq, fmtInt, fmtMoney, fmtPct, fmtPos, fmtRate, plural,
+  capitalise, confidenceLevel, eventName, fmtAbsPct, fmtCount, fmtDate, fmtFreq, fmtInt, fmtMoney, fmtPct, fmtPos, fmtRate, plural,
 } from './format.js';
 
 export const REAL_LABEL: Record<Verdict, string> = {
@@ -65,6 +65,8 @@ export const GROUP_LABEL: Record<DisplayGroup, string> = {
   churn: 'Appeared or disappeared',
 };
 export const REMAINDER_LABEL = 'Unattributed searches (included above; private or not reported)';
+/** The note under the click breakdown table about the searches Google doesn't name. */
+export const REMAINDER_NOTE = "Searches Google doesn't name (private or not reported) are already counted in the parts above.";
 
 /** cant_separate reason text, by the identification check that failed (6.2). */
 export const REASON_TEXT: Record<IdCheckName, string> = {
@@ -122,7 +124,7 @@ export const FALSIFIER_KEYS = Object.keys(FALSIFIER_COPY) as FalsifierKey[];
 
 // ---------- slot formatting ----------
 type Slots = Record<string, string | number | boolean | null | undefined>;
-type SlotKind = 'int' | 'absInt' | 'count' | 'pct' | 'absPct' | 'rate' | 'pos' | 'date' | 'money' | 'freq' | 'text';
+type SlotKind = 'int' | 'absInt' | 'count' | 'pct' | 'absPct' | 'rate' | 'pos' | 'date' | 'money' | 'freq' | 'event' | 'text';
 
 const DEFAULT_KIND: Record<string, SlotKind> = {
   days: 'int', clicks: 'int', abs: 'absInt', n: 'int', k: 'int', n_days: 'int', weeks: 'int', cpw: 'count',
@@ -131,6 +133,7 @@ const DEFAULT_KIND: Record<string, SlotKind> = {
   mde: 'absPct', share: 'absPct', hidden: 'absPct', shown: 'absPct', x: 'absPct', slope: 'absPct',
   cb: 'rate', cc: 'rate', pb: 'pos', pc: 'pos', cost: 'money', freq: 'freq',
   date: 'date', d1: 'date', d2: 'date', change_date: 'date', check_date: 'date',
+  update: 'event', event: 'event',
 };
 const KIND_OVERRIDE: Partial<Record<TemplateId, Record<string, SlotKind>>> = {
   demand: { pct: 'absPct', yoy: 'absPct' },
@@ -140,7 +143,7 @@ const KIND_OVERRIDE: Partial<Record<TemplateId, Record<string, SlotKind>>> = {
 function formatSlot(v: string | number | boolean | null | undefined, kind: SlotKind): string {
   if (v === null || v === undefined || v === '') return 'n/a';
   if (typeof v === 'boolean') return v ? 'yes' : 'no';
-  if (typeof v === 'string') return kind === 'date' ? fmtDate(v) : v;
+  if (typeof v === 'string') return kind === 'date' ? fmtDate(v) : kind === 'event' ? eventName(v) : v;
   switch (kind) {
     case 'int': return fmtInt(v);
     case 'absInt': return fmtInt(Math.abs(v));
@@ -152,6 +155,7 @@ function formatSlot(v: string | number | boolean | null | undefined, kind: SlotK
     case 'money': return fmtMoney(v);
     case 'freq': return fmtFreq(v);
     case 'date': return String(v);
+    case 'event': return String(v);
     case 'text': return String(v);
   }
 }
@@ -179,6 +183,11 @@ function reader(template: TemplateId | null, slots: Slots): SlotReader {
       const v = slots[name];
       if (typeof v === 'number' && Number.isFinite(v)) return v;
       if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) return Number(v);
+      // Some analyzers send percents already formatted ("56%", "+20%", "-1.5%"): read them as fractions.
+      if (typeof v === 'string') {
+        const m = /^\s*([+-]?\d+(?:,\d{3})*(?:\.\d+)?)%\s*$/.exec(v);
+        if (m) return Number(m[1].replace(/,/g, '')) / 100;
+      }
       return null;
     },
     str: (name) => (has(name) ? String(slots[name]) : null),
@@ -229,16 +238,37 @@ function imprSentence(r: SlotReader, slots: Slots): string {
   if (given === '' || given === 'none' || !r.has('impr_pct')) return '';
   const rawLabel = r.str('impr_label');
   const label = labelOf(rawLabel);
-  const real = r.str('impr_real') ?? (rawLabel && rawLabel in REAL_LABEL ? rawLabel : null);
-  const changed = given === 'changed' || (given !== 'unchanged' && (real ? real === 'signal' : label === REAL_LABEL.signal));
-  return changed
-    ? `Impressions, which have far more data, did change: ${r.s('impr_pct')} (${label ?? REAL_LABEL.signal}).`
-    : `Impressions, which have far more data, didn't change meaningfully (${r.s('impr_pct')}).`;
+  // The impressions verdict, from impr_real, a verdict key in impr_label, or the label text itself.
+  let real: Verdict | null = (r.str('impr_real') as Verdict | null) ?? (rawLabel && rawLabel in REAL_LABEL ? (rawLabel as Verdict) : null);
+  if (real === null && label) real = (Object.keys(REAL_LABEL) as Verdict[]).find((k) => REAL_LABEL[k] === label) ?? null;
+  if (given === 'changed') real = 'signal';
+  if (given === 'unchanged' && (real === null || real === 'signal')) real = 'noise';
+  const pct = r.s('impr_pct');
+  const tau = r.num('impr_pct');
+  switch (real) {
+    case 'signal':
+      return `Impressions, which have far more data, did change: ${pct} (${REAL_LABEL.signal}).`;
+    case 'underpowered': {
+      // Say why impressions don't settle it either, rather than "didn't change" next to +200%.
+      const moved = tau !== null && tau <= -0.995 ? 'Impressions went to zero'
+        : tau !== null && Math.abs(tau) < 0.01 ? `Impressions barely moved (${pct})`
+          : `Impressions moved ${pct}`;
+      return r.str('impr_reason') === 'floors'
+        ? `${moved}, but there are too few of them to judge either.`
+        : `${moved}, but they swing too much from month to month to call that real either.`;
+    }
+    case 'unclear':
+      return `Impressions moved ${pct}, but other things that happened at the same time make that hard to read.`;
+    default:
+      return `Impressions, which have far more data, didn't change meaningfully (${pct}).`;
+  }
 }
 
 function reasonText(r: SlotReader, slots: Slots): string {
-  if (typeof slots.reason_text === 'string') return slots.reason_text;
-  const check = r.str('check') ?? r.str('reason');
+  const given = slots.reason_text;
+  // A finished phrase is used as given; an IdCheck name (a keyword) is worded from REASON_TEXT.
+  if (typeof given === 'string' && !(given in REASON_TEXT) && given !== '') return given;
+  const check = (typeof given === 'string' && given in REASON_TEXT ? given : null) ?? r.str('check') ?? r.str('reason');
   if (check && check in REASON_TEXT) return fill(REASON_TEXT[check as IdCheckName], r);
   return 'the evidence points more than one way';
 }
@@ -264,9 +294,38 @@ function citedText(r: SlotReader, slots: Slots): string {
   return r.has('domains') ? `, and it doesn't cite you; it cites ${r.s('domains')}` : ", and it doesn't cite you";
 }
 
-/** "Whole site" reads as "the whole site" inside a sentence. */
+/** Series labels read naturally inside a sentence: "the whole site", "brand searches". */
 function unitPhrase(u: string): string {
-  return u.replace(/^whole site\b/i, 'the whole site');
+  return u.replace(/^whole site\b/i, 'the whole site').replace(/^(Brand|Other) searches\b/, (m) => m.toLowerCase());
+}
+
+/** "has" or "have" for a metric name used as a subject ("Impressions have", "Clicks have"). */
+function verbHave(metric: string): string {
+  return /s$/i.test(metric.trim()) ? 'have' : 'has';
+}
+
+/** A daily level for a sentence: "about 12 a day", "about 2 a week" below half a day, "almost none" below half a week. */
+function perDayText(v: number): string {
+  if (v >= 0.5) return `about ${fmtCount(v)} a day`;
+  if (v * 7 >= 0.5) return `about ${fmtCount(v * 7)} a week`;
+  return 'almost none';
+}
+
+/** "from about 3 a day to about 40 a day", or null when the slots carry no levels or the two read the same. */
+function levelChange(r: SlotReader): string | null {
+  const from = r.num('from');
+  const to = r.num('to');
+  if (from === null || to === null) return null;
+  const a = perDayText(from);
+  const b = perDayText(to);
+  return a === b ? null : `from ${a} to ${b}`;
+}
+
+/** " We can't separate the causes: <reason>." when a change point names the check that failed. */
+function whyUnclear(r: SlotReader): string {
+  const check = r.str('check');
+  if (!check || !(check in REASON_TEXT)) return '';
+  return ` We can't separate the causes: ${fill(REASON_TEXT[check as IdCheckName], r)}.`;
 }
 
 /** Two magnitudes as an ascending range of plain percents ("12% to 31%"). */
@@ -317,11 +376,16 @@ export function renderSentence(template: TemplateId, slots: Record<string, strin
     case 'real_google_no_changes':
       return `This is a real ${w('drop', 'rise')}, and it most likely came from Google's side. It started on ${r.s('date')}, ` +
         `${nDaysInto(r)}. We had no recorded changes on your site at that time. Confidence: ${r.s('level')}.`;
-    case 'real_site_change':
-      return `This is a real ${w('drop', 'rise')}, and it most likely came from a change on your site. ` +
-        `${r.s('k')} of the ${r.s('n')} pages that ${w('lost', 'gained')} clicks changed on ${r.s('change_date')} (${r.s('summary')}). ` +
-        `Google recrawled them between ${r.s('d1')} and ${r.s('d2')}, and the ${w('drop', 'rise')} started right after. ` +
+    case 'real_site_change': {
+      // "{k} of the {n} pages you changed": the pages that changed, and how many of them moved.
+      const one = r.num('n') === 1;
+      const which = one && r.num('k') === 1
+        ? `The page you changed on ${r.s('change_date')} (${r.s('summary')}) ${w('lost', 'gained')} clicks.`
+        : `${r.s('k')} of the ${countWord(r, 'n', 'page', 'pages')} you changed on ${r.s('change_date')} (${r.s('summary')}) ${w('lost', 'gained')} clicks.`;
+      return `This is a real ${w('drop', 'rise')}, and it most likely came from a change on your site. ${which} ` +
+        `Google recrawled ${one ? 'it' : 'them'} between ${r.s('d1')} and ${r.s('d2')}, and the ${w('drop', 'rise')} started right after. ` +
         `Pages you didn't touch held steady (${r.s('ctrl')}). Confidence: ${r.s('level')}.`;
+    }
     case 'demand': {
       const yoy = yoySentence(r, sl);
       return `${w('Fewer', 'More')} people searched. Your rankings and click rate held steady, but impressions ` +
@@ -332,6 +396,13 @@ export function renderSentence(template: TemplateId, slots: Record<string, strin
       return `You ${w('slipped', 'climbed')} in the rankings, from about position ${r.s('pb')} to ${r.s('pc')} on ` +
         `${countWord(r, 'n', 'search', 'searches')}. That ${w('cost', 'earned')} an estimated ${clickRange(r)} clicks.`;
     case 'aio_not_cited':
+      // The side-by-side comparison (cross-section) compares levels at one time, so it is worded as
+      // a comparison, not proof (5.11.3); the before-and-after estimate keeps the 6.2 wording.
+      if (r.str('wording') === 'comparison_not_proof' || r.str('estimator') === 'cross_section') {
+        return 'On searches where Google shows an AI Overview that doesn\'t cite you, your click rate is ' +
+          `${r.s('x')} lower than on similar searches without one (likely range ${pctRange(r)}). This is a comparison, ` +
+          "not proof: those searches may differ in other ways, and Google doesn't report clicks lost to AI Overviews.";
+      }
       return 'People clicked less even though you ranked in the same place. On searches where Google now shows an AI Overview ' +
         `that doesn't cite you, your click rate fell ${r.s('x')} more than on similar searches without one ` +
         `(likely range ${pctRange(r)}). This is an estimate: Google doesn't report clicks lost to AI Overviews.`;
@@ -347,6 +418,10 @@ export function renderSentence(template: TemplateId, slots: Record<string, strin
         "We haven't checked these searches yet. Add a DataForSEO login and the next run will check the " +
         `${r.s('n')} biggest ones (about ${r.s('cost')}).`;
     case 'same_spot_checked':
+      if (r.num('n') === 0) {
+        return `People clicked ${w('less', 'more')} at the same ranking position (${r.s('cb')} to ${r.s('cc')}). We checked these searches ` +
+          "and found no AI Overview, so something else on the results page changed, for example ads, a video block or your snippet.";
+      }
       return `People clicked ${w('less', 'more')} at the same ranking position (${r.s('cb')} to ${r.s('cc')}), and an AI Overview ` +
         `shows on ${r.s('n')} of these searches. We can't size its effect on your site yet.`;
     case 'noise': {
@@ -361,10 +436,30 @@ export function renderSentence(template: TemplateId, slots: Record<string, strin
     case 'not_enough_data': {
       const impr = imprSentence(r, sl);
       const notMeasurable = truthy(sl.not_measurable) || (typeof sl.mde === 'number' && !Number.isFinite(sl.mde));
-      const second = notMeasurable
-        ? "At this traffic level a change this size can't be measured reliably."
-        : `With about ${countWord(r, 'cpw', 'click', 'clicks')} a week, only a change of roughly ${r.s('mde')} or more stands out ` +
-          `from normal ups and downs over ${countWord(r, 'weeks', 'week', 'weeks')}, and this one was ${r.s('pct')}.`;
+      // The smallest detectable change is worth showing whenever it is a real number below about
+      // 95%: it tells the owner how big a move has to be before we can call it. Only when there is
+      // no usable number (no clicks in a window) does the plain "can't be measured" line replace it.
+      const mde = r.num('mde');
+      const mdeUsable = mde !== null && mde > 0 && mde < 0.95 && r.has('cpw');
+      // A change bigger than the detectable size can still be "not enough data" when the earlier
+      // weeks had too few clicks to judge at all (the minimum-data floor): say that, not a contradiction.
+      const pctNum = r.num('pct');
+      const beyond = pctNum !== null && mde !== null && Math.abs(pctNum) >= mde;
+      const mdeSentence = `With about ${countWord(r, 'cpw', 'click', 'clicks')} a week, only a change of roughly ${r.s('mde')} or more stands out ` +
+        `from normal ups and downs over ${countWord(r, 'weeks', 'week', 'weeks')}, and this one was ${r.s('pct')}` +
+        (beyond ? ', but the earlier weeks had too few clicks to call it either way.' : '.');
+      const cpw = r.num('cpw');
+      const over = r.has('weeks') ? ` over ${countWord(r, 'weeks', 'week', 'weeks')}` : '';
+      const was = r.has('pct') ? ` (this one was ${r.s('pct')})` : '';
+      let second: string;
+      if (!notMeasurable) second = mdeSentence;
+      else if (mdeUsable) second = `${mdeSentence} At this traffic level, a change much smaller than that can't be confirmed even with a year of data.`;
+      else if (cpw !== null && cpw <= 0) second = 'There were no clicks in the weeks before, so there is nothing to compare against yet.';
+      else if (cpw !== null) {
+        // The smallest detectable change is effectively everything: say so plainly.
+        const rate = cpw < 1 ? 'under 1 click' : `about ${countWord(r, 'cpw', 'click', 'clicks')}`;
+        second = `With ${rate} a week, changes of any size are hard to tell apart from normal ups and downs${over}${was}.`;
+      } else second = "At this traffic level a change this size can't be measured reliably.";
       return `Not enough data to tell yet. ${second}${impr ? ` ${impr}` : ''}`;
     }
     case 'cause_unknown': {
@@ -382,10 +477,19 @@ export function renderSentence(template: TemplateId, slots: Record<string, strin
       return `Heads up: Google changed how it counts ${r.s('metric')} around ${r.s('date')} (${r.s('event')}). ` +
         'Movement across that date may be a reporting change, not real traffic.';
     case 'too_recent':
+      if (r.has('metric') && r.has('unit')) {
+        return `${capitalise(r.s('metric'))} on ${unitPhrase(r.s('unit'))} started to ${w('fall', 'rise')} around ${r.s('date')}, ` +
+          `too recently to judge. Check again on ${r.s('check_date')}.`;
+      }
       return `This started on ${r.s('date')}, too recently to judge. Check again on ${r.s('check_date')}.`;
     case 'no_site_changes':
       return 'No site changes recorded yet. From now on searchtrace snapshots your pages each run, so future changes can be dated.';
     case 'before_recording':
+      // With {since}, the date recording started, so it reads right next to changes recorded later.
+      if (r.has('since')) {
+        return `We only started recording your site's changes on ${r.s('since', 'date')}, so for anything earlier we can't say whether ` +
+          "something you did caused it. If you remember changing something, add it with `searchtrace note` and we'll re-check.";
+      }
       return "We weren't recording your site's changes back then, so we can't say whether something you did caused this. " +
         "If you remember changing something, add it with `searchtrace note` and we'll re-check.";
     case 'site_change_unseen':
@@ -411,11 +515,30 @@ export function renderSentence(template: TemplateId, slots: Record<string, strin
     }
     case 'change_point': {
       const window = r.has('d1') && r.has('d2') && r.s('d1') !== r.s('d2') ? ` (most likely between ${r.s('d1')} and ${r.s('d2')})` : '';
-      return `${capitalise(r.s('metric'))} on ${unitPhrase(r.s('unit'))} ${w('dropped', 'rose')} by ${r.s('pct')} around ${r.s('date')}${window}.`;
+      const subject = `${capitalise(r.s('metric'))} on ${unitPhrase(r.s('unit'))}`;
+      // From almost nothing (a new page) or by many times over, a percent says little: give the levels.
+      const levels = levelChange(r);
+      if (levels && ((r.num('pct') ?? 0) >= 3 || (r.num('from') ?? 1) < 1 || (r.num('to') ?? 1) < 1)) {
+        return `${subject} ${w('fell', 'went')} ${levels} around ${r.s('date')}${window}.${whyUnclear(r)}`;
+      }
+      return `${subject} ${w('dropped', 'rose')} by ${r.s('pct')} around ${r.s('date')}${window}.${whyUnclear(r)}`;
     }
-    case 'gradual':
-      return `${capitalise(r.s('metric'))} on ${unitPhrase(r.s('unit'))} has been ${w('sliding', 'climbing')} gradually, about ${r.s('slope')} ` +
-        `a week since ${r.s('date')}.`;
+    case 'gradual': {
+      const metric = capitalise(r.s('metric'));
+      const unit = unitPhrase(r.s('unit'));
+      const from = r.num('from');
+      const to = r.num('to');
+      // Several moves that roughly cancel out are not a slide or a climb: say where it ended up.
+      if (from !== null && to !== null && from > 0 && Math.abs(to / from - 1) < 0.1) {
+        return `${metric} on ${unit} shifted up and down several times since ${r.s('date')} and ended close to where ` +
+          `${verbHave(r.s('metric')) === 'have' ? 'they' : 'it'} started (${perDayText(to)}).${whyUnclear(r)}`;
+      }
+      const subject = `${metric} on ${unit} ${verbHave(r.s('metric'))} been ${w('sliding', 'climbing')} gradually`;
+      const levels = levelChange(r);
+      if (levels) return `${subject} since ${r.s('date')}, ${levels}.${whyUnclear(r)}`;
+      if (r.has('slope')) return `${subject}, about ${r.s('slope')} a week since ${r.s('date')}.${whyUnclear(r)}`;
+      return `${subject} since ${r.s('date')}.${whyUnclear(r)}`;
+    }
     case 'aio_fact':
       return `"${r.s('query')}" (${r.s('device')}): an AI Overview showed in ${r.s('k')} of ${countWord(r, 'n', 'check', 'checks')}` +
         `${citedText(r, sl)}.`;
@@ -424,7 +547,8 @@ export function renderSentence(template: TemplateId, slots: Record<string, strin
         `The search-level explanations cover the other ${r.s('shown')}. Page-level numbers include everything.`;
     case 'freshness':
       return `Data runs to ${r.s('date')}, in Pacific Time as Google reports it. Google finalises data 2 to 3 days late, ` +
-        `so the last ${countWord(r, 'n', 'day is', 'days are')} left out rather than shown as a fake drop.`;
+        (r.has('n') ? `so the last ${countWord(r, 'n', 'day is', 'days are')} left out` : 'so later days are left out') +
+        ' rather than shown as a fake drop.';
   }
   return assertNever(template);
 }
@@ -435,8 +559,22 @@ function assertNever(x: never): string {
 
 /** One "Other explanations" line. */
 export function renderAlt(key: AltKey, slots: Record<string, string | number>): string {
+  const r = reader(null, slots as Slots);
+  // "Ruled out" can mean the part was tiny even though the number itself moved: don't say "held"
+  // next to a position that went from 4.8 to 2.6 or impressions that moved 11%.
+  if (key === 'rank_ruled_out') {
+    const pb = r.num('pb');
+    const pc = r.num('pc');
+    if (pb !== null && pc !== null && Math.abs(pc - pb) >= 0.5) {
+      return `Ranking: ruled out, the move from position ${r.s('pb')} to ${r.s('pc')} explains little of the change.`;
+    }
+  }
+  if (key === 'demand_ruled_out') {
+    const ip = r.num('impr_pct');
+    if (ip !== null && Math.abs(ip) >= 0.05) return `Fewer searches: ruled out, impressions moved ${r.s('impr_pct')} but that explains little of the change.`;
+  }
   const copy = ALT_COPY[key];
-  return copy === undefined ? String(key) : fill(copy, reader(null, slots as Slots));
+  return copy === undefined ? String(key) : fill(copy, r);
 }
 
 /** The falsifier line, including its "What would prove this wrong:" prefix. */
@@ -497,7 +635,14 @@ export function answerSentences(out: AnalysisOutput): { sentence: string; verdic
   const slots = slotsFor(f);
   // The headline comparison carries the wobble frequency even when the finding's slots don't.
   if (slots.freq === undefined && out.headline.clicks.freq !== null) slots.freq = out.headline.clicks.freq;
-  return { sentence: renderSentence('headline', headlineSlots(out)), verdict: renderSentence(f.template, slots) };
+  let verdict = renderSentence(f.template, slots);
+  // The site total can be wobble while a section or a search really changed: don't tell people
+  // there is nothing to act on right above those changes.
+  const elsewhere = out.findings.some((x) => x.id !== f.id && x.real === 'signal' && x.reason !== 'fact' && x.kind !== 'update_impact');
+  if (f.template === 'noise' && elsewhere) {
+    verdict = verdict.replace(/ Nothing to act on\.$/, " Across the whole site that's nothing to act on, but parts of it did change.");
+  }
+  return { sentence: renderSentence('headline', headlineSlots(out)), verdict };
 }
 
 /** One waterfall display group with its value and 95% range, when known. */

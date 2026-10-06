@@ -10,6 +10,9 @@
 //   callers map statuses (401, 403, 404, persistent 429) to their own errors and fix lines.
 // - Bodies are read as a stream and cut at maxBytes decoded bytes (default 64 MiB), with
 //   `truncated: true`. Text is decoded with the charset from Content-Type (UTF-8 otherwise).
+// - gunzip: true decompresses a body that starts with the gzip magic bytes (an .xml.gz sitemap
+//   served without Content-Encoding) as a stream; maxBytes then caps the decompressed bytes, so
+//   a gzip bomb is cut off, and the text is read as UTF-8. Other bodies are read as usual.
 // - Failures throw StError('network') with extra fields: url (no query string), method,
 //   attempts, timedOut, cancelled, and notSent (true only when the request provably never left
 //   this machine: DNS failure, connection refused, TLS setup). Non-idempotent callers use
@@ -129,14 +132,62 @@ function charsetOf(contentType: string | null): string {
   return m ? m[1].toLowerCase() : 'utf-8';
 }
 
-async function readBody(res: Response, maxBytes: number): Promise<{ text: string; truncated: boolean }> {
+const GZIP_MAGIC = [0x1f, 0x8b];
+
+/** The body stream, decompressed when gunzip is on and the first bytes are the gzip magic. */
+async function bodyStream(body: ReadableStream<Uint8Array>, gunzip: boolean): Promise<{ stream: ReadableStream<Uint8Array>; gzipped: boolean }> {
+  if (!gunzip) return { stream: body, gzipped: false };
+  const reader = body.getReader();
+  const head: Uint8Array[] = [];
+  let headBytes = 0;
+  let ended = false;
+  while (headBytes < GZIP_MAGIC.length) {
+    const r = await reader.read();
+    if (r.done) {
+      ended = true;
+      break;
+    }
+    head.push(r.value);
+    headBytes += r.value.byteLength;
+  }
+  const first = Buffer.concat(head);
+  const replay = new ReadableStream<Uint8Array>({
+    start(controller) {
+      if (first.length) controller.enqueue(new Uint8Array(first));
+      if (ended) controller.close();
+    },
+    async pull(controller) {
+      const r = await reader.read();
+      if (r.done) controller.close();
+      else controller.enqueue(r.value);
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+  const gzipped = first.length >= 2 && first[0] === GZIP_MAGIC[0] && first[1] === GZIP_MAGIC[1];
+  if (!gzipped) return { stream: replay, gzipped: false };
+  return { stream: replay.pipeThrough(new DecompressionStream('gzip') as unknown as TransformStream<Uint8Array, Uint8Array>), gzipped: true };
+}
+
+async function readBody(res: Response, maxBytes: number, gunzip: boolean): Promise<{ text: string; truncated: boolean }> {
   if (!res.body) return { text: '', truncated: false };
-  const reader = res.body.getReader();
+  const { stream, gzipped } = await bodyStream(res.body, gunzip);
+  const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
   let truncated = false;
   for (;;) {
-    const { done, value } = await reader.read();
+    let step: Awaited<ReturnType<typeof reader.read>>;
+    try {
+      step = await reader.read();
+    } catch (e) {
+      // A corrupt gzip body: keep what decompressed cleanly and mark it cut short.
+      if (!gzipped) throw e;
+      truncated = true;
+      break;
+    }
+    const { done, value } = step;
     if (done) break;
     if (total + value.byteLength > maxBytes) {
       chunks.push(value.subarray(0, Math.max(0, maxBytes - total)));
@@ -151,7 +202,7 @@ async function readBody(res: Response, maxBytes: number): Promise<{ text: string
   const buf = Buffer.concat(chunks, total);
   let decoder: InstanceType<typeof TextDecoder>;
   try {
-    decoder = new TextDecoder(charsetOf(res.headers.get('content-type')));
+    decoder = new TextDecoder(gzipped ? 'utf-8' : charsetOf(res.headers.get('content-type')));
   } catch {
     decoder = new TextDecoder('utf-8');
   }
@@ -215,7 +266,7 @@ export async function request(fetchFn: Fetch, req: HttpRequest): Promise<HttpRes
         redirect: req.redirect ?? 'follow',
         signal,
       });
-      ({ text, truncated } = await readBody(res, maxBytes));
+      ({ text, truncated } = await readBody(res, maxBytes, req.gunzip === true));
     } catch (e) {
       if (req.signal?.aborted) throw cancelled(attempt);
       const c = classify(e, timeoutMs, timeout);

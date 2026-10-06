@@ -119,7 +119,8 @@ describe('buildGraph', () => {
   });
 
   it('labels: page path, site, site change, Google update, cause, and finding labels capped at 120', () => {
-    expect(nodeBy(doc, 'page', 'https://example.com/')?.label).toBe('/');
+    // graphify drops queries with no word characters, so the homepage carries a word to ask by.
+    expect(nodeBy(doc, 'page', 'https://example.com/')?.label).toBe('/ (homepage)');
     expect(nodeBy(doc, 'page', 'https://example.com/blog/fix-a-leak')?.label).toBe('/blog/fix-a-leak');
     expect(nodeBy(doc, 'site', 'example.com')?.label).toBe('example.com (whole site)');
     expect(byKind(doc, 'sitechg').map((x) => x.label).sort()).toEqual([

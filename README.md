@@ -18,7 +18,7 @@ searchtrace is a command-line tool that works through those questions using your
 npx searchtrace demo
 ```
 
-A full report on a made-up site, built offline in about 30 seconds. No login, nothing to install.
+A full report on a made-up site, built offline in about 15 seconds. No login, nothing to install.
 
 ## What it tells you
 

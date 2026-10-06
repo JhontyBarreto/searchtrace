@@ -58,7 +58,7 @@ import type {
   DemoTruth, ErrorCode, FalsifierKey, Fetch, Finding, GoogleAuth, GoogleEvent, GraphDoc, GraphInput, GscPlan, GscPlanState,
   HttpRequest, HttpResponse, IndexDb, InspectionPlan, InspectionRecord, Instant, IsoDate, Layout, Limiter, LocaliseInput,
   LocaliseResult, Logger, NodeKind, PageFields, PeriodCompareInput, PeriodEffect, PipelineOptions, PowerInfo, ReportContext,
-  Rng, RunSummary, SampleDesignKind, ScorecardInput, SecretRegistry, SerpCollectPlan, SerpObservation, SerpPoster,
+  Rng, RunSummary, SampleDesignKind, ScopeDecomposition, ScorecardInput, SecretRegistry, SerpCollectPlan, SerpObservation, SerpPoster,
   SiteChange, SiteChangeImpact, SiteChangeInput, SnapshotRecord, TemplateId, UpdateRow, UpdatesPlan, Verdict, VerdictInput,
   VerdictResult,
 } from '../../src/core/types.js';
@@ -246,6 +246,22 @@ describe('spec 2.4 skeleton contract', () => {
     expectTypeOf(why.renderWhy).toEqualTypeOf<(out: AnalysisOutput, target: string | null, o: { color: boolean }) => string>();
     expectTypeOf(pipeline.runPipeline).toEqualTypeOf<(o: PipelineOptions) => Promise<RunSummary>>();
     expectTypeOf(cliMain.main).toEqualTypeOf<(argv: string[]) => Promise<number>>();
+  });
+
+  it('Phase 2 additions to core/types.ts are optional, so Phase 1 callers still compile', () => {
+    expectTypeOf<GoogleAuth['source']>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<NonNullable<GoogleAuth['invalidate']>>().toEqualTypeOf<() => void>();
+    expectTypeOf<HttpRequest['gunzip']>().toEqualTypeOf<boolean | undefined>();
+    expectTypeOf<CurveCell['date']>().toEqualTypeOf<IsoDate | undefined>();
+    expectTypeOf<AioInput['fdrQ']>().toEqualTypeOf<number | undefined>();
+    expectTypeOf<NonNullable<ScopeDecomposition['ci95']>['ranking']>().toEqualTypeOf<[number, number] | undefined>();
+    expectTypeOf<NonNullable<Finding['componentCi95']>['churn']>().toEqualTypeOf<[number, number] | undefined>();
+    expectTypeOf<DemoTruth['expect'][number]['eventId']>().toEqualTypeOf<string | undefined>();
+    // An object written to the Phase 0 shapes still satisfies them.
+    const auth: GoogleAuth = { kind: 'service_account', principal: 'p', scopes: [], headers: async () => ({}) };
+    const cell: CurveCell = { p: 1, c: 0, i: 1, seg: 'desktop|brand' };
+    expect(auth.invalidate).toBeUndefined();
+    expect(cell.date).toBeUndefined();
   });
 
   it('every module loads and every 2.4 export exists', () => {

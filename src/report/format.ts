@@ -137,6 +137,17 @@ export function truncate(s: string, max: number): string {
   return `${s.slice(0, Math.max(0, max - 3)).trimEnd()}...`;
 }
 
+/**
+ * A Google event's title as a short name. Status-page titles are already short; a curated
+ * description ("Google stopped honouring ... . Many sites saw ...") is cut to its first sentence.
+ */
+export function eventName(title: string): string {
+  const t = String(title).trim();
+  if (t.length <= 90) return t;
+  const m = /^(.{12,}?[^.\s])\.\s/.exec(t);
+  return m ? m[1] : truncate(t, 90);
+}
+
 /** Upper-cases the first character. */
 export function capitalise(s: string): string {
   return s.length ? s[0].toUpperCase() + s.slice(1) : s;

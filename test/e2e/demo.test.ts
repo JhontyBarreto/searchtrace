@@ -1,27 +1,34 @@
 // Test 74: the demo fixture's planted story is recovered end to end, offline (spec 6.9, 10.2). Owner: WP-E.
 //
 // Part 1 runs the analysis over a real SQLite index built from the fixture and checks every
-// truth.json expectation against the structured output. Part 2 runs the whole offline pipeline in a
-// temporary folder (as `searchtrace demo` does) and checks the same story in reports/findings.json,
-// plus the report's size and safety. Every expectation is its own test, so a failure names the part
-// of the story that was not recovered.
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+// truth.json expectation against the structured output. Part 2 runs the real `demo` command in a
+// temporary folder, then `run --offline` and `why` on it, and checks the same story in
+// reports/findings.json, the report's size and safety, byte-identical re-runs, and the terminal
+// output against golden files (spec 6.4, paths normalised). Every expectation is its own test, so a
+// failure names the part of the story that was not recovered.
+//
+// Golden files live in test/e2e/golden/. After an intended copy change, refresh them with
+//   npx vitest run --config vitest.e2e.config.ts test/e2e/demo.test.ts -u
+// and read the diff before committing.
+import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { defaultConfig, writeConfig } from '../../src/core/config.js';
+import { demoCommand } from '../../src/cli/commands/demo.js';
+import { runCommand } from '../../src/cli/commands/run.js';
+import { analyzeDataDir, whyCommand } from '../../src/cli/commands/why.js';
+import type { CliDeps } from '../../src/cli/prompt.js';
+import { defaultConfig } from '../../src/core/config.js';
 import { StError } from '../../src/core/errors.js';
-import { createSecretRegistry } from '../../src/core/secrets.js';
 import { clusterTemplates } from '../../src/core/templates.js';
-import { addDays, fixedClock, ptDayStart } from '../../src/core/time.js';
+import { fixedClock } from '../../src/core/time.js';
 import type { AnalysisOutput, Finding, SiteChange } from '../../src/core/types.js';
 import { runAnalysisDetailed } from '../../src/analyze/index.js';
 import { DEMO_PROPERTY, demoTruth, writeDemoFixture, type DemoExpectation } from '../../src/demo/fixture.js';
 import { openIndex } from '../../src/index/db.js';
-import { runPipeline } from '../../src/pipeline/run.js';
+import { renderWhy } from '../../src/report/why.js';
 import { deriveSiteChanges } from '../../src/sources/crawl/diff.js';
 import { layout } from '../../src/store/layout.js';
-import { openStore } from '../../src/store/store.js';
 import { memoryStore } from '../helpers/index.js';
 
 const { expectations } = demoTruth();
@@ -141,35 +148,44 @@ describe('demo: analysis over the real index', () => {
   });
 });
 
-describe('demo: offline pipeline', () => {
+describe('demo: the demo command, then run and why, offline', () => {
+  let parent = '';
   let dir = '';
-  let pipelineReady = true;
+  let demoJson = '';
+  let out: AnalysisOutput | null = null;
+  const said: Record<string, string> = {};
+
+  /** CLI dependencies with captured output, a fixed clock, no colour and a network that refuses every call. */
+  function deps(key: string): Partial<CliDeps> {
+    said[key] = '';
+    said[`${key}:err`] = '';
+    const stream = (k: string) => ({ isTTY: false, write: (t: string) => ((said[k] += t), true) });
+    return {
+      env: { NO_COLOR: '1' }, stdout: stream(key), stderr: stream(`${key}:err`), stdinIsTTY: false, cwd: parent, homedir: parent,
+      clock: fixedClock('2026-10-06T07:00:00Z'), prompter: null,
+      fetch: (async () => {
+        throw new Error('the demo must not touch the network');
+      }) as typeof fetch,
+    };
+  }
+  /** Temporary paths become <DATA> so golden files are the same on every machine. */
+  const normalise = (text: string): string => text.split(dir).join('<DATA>').split(parent).join('<PARENT>');
 
   beforeAll(async () => {
-    dir = await mkdtemp(join(tmpdir(), 'searchtrace-demo-e2e-'));
-    const store = await openStore(dir, createSecretRegistry({ ci: false }));
-    const truth = await writeDemoFixture(store);
-    const cfg = defaultConfig(truth.property);
-    await writeConfig(dir, { ...cfg, crawl: { ...cfg.crawl, enabled: false }, inspection: { ...cfg.inspection, enabled: false } });
-    const runAt = ptDayStart(addDays(truth.dataThrough, 3));
-    await store.writeFileAtomic(layout.meta, `${JSON.stringify({ schema: 1, property: truth.property, createdAt: runAt, toolVersion: '0.1.0', demo: true })}\n`);
-    try {
-      await runPipeline({
-        dir, demo: true, clock: fixedClock(runAt), env: {},
-        flags: { dryRun: false, offline: true, noPaid: true, ci: false, yes: true, interactive: false, budgetUsd: 0, waitMinutes: 0, credentials: null, forceGraph: false },
-      });
-    } catch (e) {
-      if (e instanceof StError && e.code === 'not_implemented') pipelineReady = false;
-      else throw e;
-    }
-  }, 240_000);
+    parent = await mkdtemp(join(tmpdir(), 'searchtrace-demo-e2e-'));
+    dir = join(parent, 'searchtrace-data');
+    expect(await demoCommand(['--out', dir], deps('demo'))).toBe(0);
+    demoJson = await readFile(join(dir, layout.findingsJson), 'utf8');
+    expect(await runCommand(['--offline', '--dir', dir], deps('run'))).toBe(0);
+    expect(await whyCommand(['--dir', dir], deps('why'))).toBe(0);
+    out = await analyzeDataDir(dir);
+  }, 300_000);
 
   afterAll(async () => {
-    if (dir) await rm(dir, { recursive: true, force: true });
+    if (parent) await rm(parent, { recursive: true, force: true });
   });
 
-  it('writes a findings.json that tells the planted story', async (ctx) => {
-    if (!pipelineReady) ctx.skip();
+  it('writes a findings.json that tells the planted story', async () => {
     const doc = JSON.parse(await readFile(join(dir, layout.findingsJson), 'utf8')) as { property: string; data_through: string; findings: Record<string, unknown>[] };
     expect(doc.property).toBe(DEMO_PROPERTY);
     expect(doc.data_through).toBe('2026-10-03');
@@ -181,12 +197,55 @@ describe('demo: offline pipeline', () => {
     expect(missed).toEqual([]);
   });
 
-  it('writes a self-contained HTML report under 300 KB with no scripts', async (ctx) => {
-    if (!pipelineReady) ctx.skip();
+  it('writes a self-contained HTML report under 300 KB with no scripts', async () => {
     const path = join(dir, layout.reportHtml);
     expect((await stat(path)).size).toBeLessThan(300_000);
     const html = await readFile(path, 'utf8');
     expect(html).not.toMatch(/<script/i);
     expect(html).not.toMatch(/src="http|href="http[^"]*\.css/);
+  });
+
+  it('re-runs to byte-identical findings.json (D24), with no second findings partition', async () => {
+    expect(await readFile(join(dir, layout.findingsJson), 'utf8')).toBe(demoJson);
+    const parts = (await readdir(join(dir, 'findings', '2026', '10'))).filter((f) => f.endsWith('.ndjson.gz'));
+    expect(parts).toHaveLength(1);
+    expect(said.run).toContain('The answer');
+  });
+
+  it('never prints NaN, Infinity, undefined, null or a raw slot keyword in what people read', async () => {
+    const md = await readFile(join(dir, layout.reportMd), 'utf8');
+    const html = await readFile(join(dir, layout.reportHtml), 'utf8');
+    for (const text of [md, html, said.demo, said.run, said.why]) {
+      // NaN and friends, a {slot} left unfilled, or the copy fallback for an unknown template ("n/a (id)").
+      expect(text).not.toMatch(/\b(NaN|Infinity|undefined)\b|\{[a-z_]+\}|n\/a \([a-z_]+\)/);
+      expect(text).not.toMatch(/\bnull\b/);
+      expect(text).not.toMatch(/\b(doesnt_cite_you|cites_you|comparison_not_proof|estimate_not_measured|competing_events|single_check|curve_unstable|measurement_event)\b/);
+    }
+  });
+
+  // Golden files for the terminal output (6.4). Paths are normalised; the clock and run id are fixed.
+  it('prints the demo command output (6.4.5)', async () => {
+    expect(said['demo:err']).toBe('');
+    await expect(normalise(said.demo)).toMatchFileSnapshot('./golden/demo.txt');
+  });
+
+  it('prints the run summary (6.4.1)', async () => {
+    await expect(normalise(said.run)).toMatchFileSnapshot('./golden/run-offline.txt');
+  });
+
+  it('prints why with no target: the headline (6.4.3)', async () => {
+    await expect(normalise(said.why)).toMatchFileSnapshot('./golden/why.txt');
+  });
+
+  it('prints why for a section, a page, a search and a date (6.4.3)', async () => {
+    const o = out as AnalysisOutput;
+    for (const [target, file] of [
+      ['/blog/*', 'why-blog-section.txt'],
+      ['/areas/pellowby', 'why-thin-page.txt'],
+      ['how to stop a dripping tap', 'why-search.txt'],
+      ['2025-12-15', 'why-date.txt'],
+    ] as const) {
+      await expect(normalise(renderWhy(o, target, { color: false }))).toMatchFileSnapshot(`./golden/${file}`);
+    }
   });
 });

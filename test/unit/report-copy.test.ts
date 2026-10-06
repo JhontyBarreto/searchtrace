@@ -83,8 +83,12 @@ describe('copy deck', () => {
       'Not enough data to tell yet. With about 20 clicks a week, only a change of roughly 45% or more stands out from normal ' +
       "ups and downs over 4 weeks, and this one was -10%. Impressions, which have far more data, didn't change meaningfully (+3%).",
     );
+    // Not measurable with a clicks-a-week figure: say plainly that no size of change stands out
+    // (verification on a real small site; the bare 6.2 line gave owners no number to go on).
     const nm = renderSentence('not_enough_data', { cpw: 1, not_measurable: 1, pct: -0.4 });
-    expect(nm).toBe("Not enough data to tell yet. At this traffic level a change this size can't be measured reliably.");
+    expect(nm).toBe('Not enough data to tell yet. With about 1 click a week, changes of any size are hard to tell apart from normal ups and downs (this one was -40%).');
+    expect(renderSentence('not_enough_data', { not_measurable: 1, pct: -0.4 }))
+      .toBe("Not enough data to tell yet. At this traffic level a change this size can't be measured reliably.");
     expect(renderSentence('not_enough_data', { cpw: 1, mde: 0.9, weeks: 4, pct: -0.4 })).toContain('about 1 click a week');
     expect(renderSentence('not_enough_data', { cpw: 20, mde: 0.45, weeks: 4, pct: 0.2, impr_pct: 0.25, impr_real: 'signal', impr_label: 'Real change' }))
       .toContain('did change: +25% (Real change)');
@@ -128,7 +132,71 @@ describe('copy deck', () => {
     expect(s.level).toBe('high');
     const page = out.findings.find((f) => f.id === 'fcccccccccccccccc')!;
     expect(slotsFor(page).not_measurable).toBe(1);
-    expect(renderSentence(page.template, slotsFor(page))).toContain("can't be measured reliably");
+    // With a usable smallest-detectable change (under 95%), the sentence keeps it and adds the
+    // year note; only without one does it fall back to "can't be measured reliably".
+    const said = renderSentence(page.template, slotsFor(page));
+    expect(said).toContain('only a change of roughly 90% or more stands out');
+    expect(said).toContain("a change much smaller than that can't be confirmed even with a year of data.");
+    // Above that, the sentence says plainly that changes of any size are hard to see, or that there
+    // was nothing to compare against; without a clicks-a-week figure it says it can't be measured.
+    expect(renderSentence(page.template, { ...slotsFor(page), mde: 0.97 }))
+      .toContain('With about 2 clicks a week, changes of any size are hard to tell apart from normal ups and downs over 4 weeks (this one was -40%).');
+    expect(renderSentence('not_enough_data', { cpw: 0.25, mde: 0.99, weeks: 4, pct: -1, not_measurable: 1 }))
+      .toBe('Not enough data to tell yet. With under 1 click a week, changes of any size are hard to tell apart from normal ups and downs over 4 weeks (this one was -100%).');
+    expect(renderSentence('not_enough_data', { cpw: 0, mde: 1, weeks: 4, not_measurable: 1 }))
+      .toBe('Not enough data to tell yet. There were no clicks in the weeks before, so there is nothing to compare against yet.');
+    expect(renderSentence('not_enough_data', { mde: 1, not_measurable: 1 })).toContain("can't be measured reliably");
+  });
+
+  it('does not say "held" for a part that moved but explains little, nor contradict the detectable size', () => {
+    expect(renderAlt('rank_ruled_out', { pb: 4.8, pc: 2.6 })).toBe('Ranking: ruled out, the move from position 4.8 to 2.6 explains little of the change.');
+    expect(renderAlt('rank_ruled_out', { pb: 6.3, pc: 6.3 })).toBe('Ranking: ruled out, average position held (6.3 to 6.3).');
+    expect(renderAlt('demand_ruled_out', { impr_pct: -0.11 })).toBe('Fewer searches: ruled out, impressions moved -11% but that explains little of the change.');
+    expect(renderAlt('demand_ruled_out', { impr_pct: -0.002 })).toBe('Fewer searches: ruled out, impressions held (-0.2%).');
+    expect(renderSentence('not_enough_data', { cpw: 2, mde: 0.7, weeks: 4, pct: 0.88 }))
+      .toContain('and this one was +88%, but the earlier weeks had too few clicks to call it either way.');
+    expect(renderSentence('not_enough_data', { cpw: 20, mde: 0.45, weeks: 4, pct: -0.1 })).toContain('and this one was -10%.');
+    // Pre-formatted percent slots (as the site-change analyzer sends them) are read as numbers too.
+    expect(renderSentence('not_enough_data', { cpw: '17', mde: '56%', weeks: 4, pct: '+20%', not_measurable: 1 }))
+      .toContain('only a change of roughly 56% or more stands out from normal ups and downs over 4 weeks, and this one was +20%.');
+  });
+
+  it('says why impressions settle nothing either, and words odd moves plainly', () => {
+    const base = { cpw: 20, mde: 0.45, weeks: 4, pct: -0.1 };
+    expect(renderSentence('not_enough_data', { ...base, impr_pct: 2.21, impr_real: 'underpowered', impr_reason: 'floors' }))
+      .toContain('Impressions moved +221%, but there are too few of them to judge either.');
+    expect(renderSentence('not_enough_data', { ...base, impr_pct: -0.16, impr_real: 'underpowered', impr_reason: 'wide_ci' }))
+      .toContain('Impressions moved -16%, but they swing too much from month to month to call that real either.');
+    expect(renderSentence('not_enough_data', { ...base, impr_pct: -1, impr_real: 'underpowered', impr_reason: 'floors' }))
+      .toContain('Impressions went to zero, but there are too few of them to judge either.');
+    expect(renderSentence('not_enough_data', { ...base, impr_pct: 0, impr_real: 'underpowered', impr_reason: 'floors' }))
+      .toContain('Impressions barely moved (0%)');
+    expect(renderSentence('not_enough_data', { ...base, impr_pct: -0.3, impr_real: 'unclear' }))
+      .toContain('Impressions moved -30%, but other things that happened at the same time make that hard to read.');
+    // Never "didn't change meaningfully" next to a big move that just lacks data.
+    expect(renderSentence('not_enough_data', { ...base, impr_pct: -0.92, impr_real: 'underpowered' })).not.toContain("didn't change");
+  });
+
+  it('words change points from almost nothing in levels, not huge percents', () => {
+    const cp = { metric: 'impressions', unit: '/blog/new-post', date: '2026-07-05', d1: '2026-07-05', d2: '2026-07-11', direction: 'up' };
+    expect(renderSentence('change_point', { ...cp, pct: 1253, from: 0.02, to: 22 }))
+      .toBe('Impressions on /blog/new-post went from almost none to about 22 a day around 5 Jul 2026 (most likely between 5 Jul 2026 and 11 Jul 2026).');
+    expect(renderSentence('change_point', { ...cp, pct: 0.52, from: 39, to: 59 })).toContain('rose by 52% around 5 Jul 2026');
+    expect(renderSentence('change_point', { ...cp, pct: 0.76, from: 2.3, to: 0.5, direction: 'down' }))
+      .toContain('fell from about 2.3 a day to about 0.5 a day');
+    expect(renderSentence('change_point', { ...cp, pct: 0.9, from: 0.2, to: 0.02, direction: 'down' }))
+      .toContain('fell from about 1.4 a week to almost none');
+  });
+
+  it('words gradual changes in levels, with "have" for plural metrics', () => {
+    const g = { metric: 'impressions', unit: '/blog/a', date: '2026-04-19', direction: 'down' };
+    expect(renderSentence('gradual', { ...g, from: 7.5, to: 0.01, slope: 0.1 }))
+      .toBe('Impressions on /blog/a have been sliding gradually since 19 Apr 2026, from about 7.5 a day to almost none.');
+    expect(renderSentence('gradual', { ...g, from: 749, to: 747 }))
+      .toBe('Impressions on /blog/a shifted up and down several times since 19 Apr 2026 and ended close to where they started (about 747 a day).');
+    // Without levels, the relative weekly slope is used, and never "almost none to almost none".
+    expect(renderSentence('gradual', { ...g, slope: 0.05 })).toContain('about 5% a week since 19 Apr 2026');
+    expect(renderSentence('gradual', { ...g, from: 0.01, to: 0.02 })).toBe('Impressions on /blog/a have been sliding gradually since 19 Apr 2026.');
   });
 });
 
@@ -153,5 +221,53 @@ describe('slot conventions seen from the analysis package', () => {
   it('never calls normal wobble rare when the frequency is unknown', () => {
     expect(renderSentence('noise', { pct: -0.03 })).toBe('This is normal wobble. Clicks moved -3%, which is within normal ups and downs for your site. Nothing to act on.');
     expect(renderSentence('noise', { pct: -0.03, freq: 0.5 })).toContain('happen about 1 in 2 four-week periods');
+  });
+
+  it('words an IdCheck name given as reason_text instead of printing the keyword', () => {
+    const s = renderSentence('cant_separate', { date: '2026-04-02', reason_text: 'coverage' });
+    expect(s).toBe("Something changed around 2 Apr 2026, but too few comparable searches were checked, so we can't separate the causes.");
+    expect(renderSentence('cant_separate', { date: '2026-04-02', check: 'competing_events', a: 'a change on your site', b: 'the May 2026 core update' }))
+      .toContain('a change on your site and the May 2026 core update overlapped');
+  });
+
+  it('names the series in too-recent change points, so two of them on one page read differently', () => {
+    expect(renderSentence('too_recent', { metric: 'impressions', unit: 'Brand searches', date: '2026-09-21', check_date: '2026-10-05', direction: 'up' }))
+      .toBe('Impressions on brand searches started to rise around 21 Sep 2026, too recently to judge. Check again on 5 Oct 2026.');
+    expect(renderSentence('too_recent', { date: '2026-09-21', check_date: '2026-10-05' })).toBe('This started on 21 Sep 2026, too recently to judge. Check again on 5 Oct 2026.');
+  });
+
+  it('describes the side-by-side AI Overview estimate as a comparison, not proof (5.11.3)', () => {
+    const cross = renderSentence('aio_not_cited', { x: -0.29, lo: -0.33, hi: -0.25, wording: 'comparison_not_proof' });
+    expect(cross).toContain('your click rate is 29% lower than on similar searches without one (likely range 25% to 33%)');
+    expect(cross).toContain('This is a comparison, not proof');
+    expect(renderSentence('aio_not_cited', { x: -0.29, lo: -0.33, hi: -0.25, wording: 'estimate_not_measured' })).toContain('This is an estimate');
+  });
+
+  it('counts the pages you changed, and reads naturally for a single page', () => {
+    const many = renderSentence('real_site_change', { ...FULL_SLOTS, k: 27, n: 40 });
+    expect(many).toContain('27 of the 40 pages you changed on 9 Sep 2026 (new titles) lost clicks. Google recrawled them');
+    const one = renderSentence('real_site_change', { ...FULL_SLOTS, k: 1, n: 1, summary: 'title changed from "A" to "B"' });
+    expect(one).toContain('The page you changed on 9 Sep 2026 (title changed from "A" to "B") lost clicks. Google recrawled it between');
+  });
+
+  it('says what was found when checked searches show no AI Overview', () => {
+    expect(renderSentence('same_spot_checked', { cb: 0.05, cc: 0.065, n: 0, direction: 'up' }))
+      .toBe('People clicked more at the same ranking position (5% to 6.5%). We checked these searches and found no AI Overview, so something else on the results page changed, for example ads, a video block or your snippet.');
+  });
+
+  it('dates "before recording" when changes have been recorded since a day', () => {
+    expect(renderSentence('before_recording', { since: '2026-09-08' })).toMatch(/^We only started recording your site's changes on 8 Sep 2026, so for anything earlier/);
+  });
+
+  it('says why a change point could not be attributed', () => {
+    expect(renderSentence('change_point', { metric: 'clicks', unit: '/blog/a', pct: 0.054, date: '2026-07-18', d1: '2026-06-16', d2: '2026-08-26', direction: 'up', check: 'seasonal' }))
+      .toBe("Clicks on /blog/a rose by 5.4% around 18 Jul 2026 (most likely between 16 Jun 2026 and 26 Aug 2026). We can't separate the causes: the same thing happened at this time last year.");
+  });
+
+  it('cuts a long curated event description to a name', () => {
+    const long = 'Google stopped honouring the &num=100 results parameter. Many sites saw desktop impressions fall and average position improve in Search Console from mid-September 2025, with no change in real traffic.';
+    expect(renderSentence('reporting_artefact', { metric: 'impressions', date: '2025-09-10', event: long }))
+      .toBe('Heads up: Google changed how it counts impressions around 10 Sep 2025 (Google stopped honouring the &num=100 results parameter). Movement across that date may be a reporting change, not real traffic.');
+    expect(renderSentence('reporting_artefact', { metric: 'impressions', date: '2025-09-10', event: 'num=100' })).toContain('(num=100)');
   });
 });

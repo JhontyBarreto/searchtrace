@@ -207,6 +207,32 @@ describe('inspectionCollector', () => {
     expect(res.partitions).toEqual([]);
   });
 
+  it('refreshes the token once on a 401, then gives up with an auth error on a second 401', async () => {
+    let tokens = 0;
+    let invalidated = 0;
+    const refreshing: GoogleAuth = {
+      ...google,
+      headers: async () => ({ authorization: `Bearer token-number-${tokens++}` }),
+      invalidate: () => {
+        invalidated++;
+      },
+    };
+    // The first token is stale; after one refresh every call succeeds.
+    const ok = fakeFetch([{ method: 'POST', url: INSPECT_ENDPOINT, reply: (req) => (req.headers.authorization === 'Bearer token-number-0' ? { status: 401, body: { error: { code: 401 } } } : { body: OK_BODY }) }]);
+    const ctx = { ...context({ clock: fixedClock('2026-10-06T08:30:00Z'), store: memoryStore(), index: trafficIndex(1), ff: ok }), google: refreshing };
+    const res = await inspectionCollector.execute(await inspectionCollector.plan(ctx), ctx);
+    expect(res.status).toBe('ok');
+    expect(res.rows).toBe(1);
+    expect(invalidated).toBe(1);
+    // A credential Google keeps refusing fails the phase after exactly one retry.
+    const refused = fakeFetch([{ method: 'POST', url: INSPECT_ENDPOINT, reply: { status: 401, body: { error: { code: 401 } } } }]);
+    const ctx2 = { ...context({ clock: fixedClock('2026-10-06T08:30:00Z'), store: memoryStore(), index: trafficIndex(1), ff: refused }), google: refreshing };
+    const res2 = await inspectionCollector.execute(await inspectionCollector.plan(ctx2), ctx2);
+    expect(res2.status).toBe('failed');
+    expect(res2.errors[0].code).toBe('auth');
+    expect(refused.calls).toHaveLength(2);
+  });
+
   it('skips cleanly when turned off, offline or without a credential', async () => {
     const store = memoryStore();
     const base = context({ clock: fixedClock('2026-10-06T08:30:00Z'), store, index: trafficIndex(1), ff: fakeFetch([]) });

@@ -334,13 +334,16 @@ function emptyPayload(today: IsoDate): GscPlan {
   return { probeFrom: addDays(today, -10), probeTo: today, sealDays: [], revalidateDays: [], rangeChunks: [] };
 }
 
+/** Counts with thousands separators (6.3): "1,019". */
+const count = (n: number): string => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
 function planLines(p: GscPlan, today: IsoDate, F: IsoDate, est: number): PlanLine[] {
   const tail = Math.max(0, diffDays(F, today) + 1);
   const parts = [
-    p.sealDays.length === 1 ? '1 day to seal' : `${p.sealDays.length} days to seal`,
-    ...(p.revalidateDays.length > 0 ? [`${p.revalidateDays.length} to double-check`] : []),
+    p.sealDays.length === 1 ? '1 day to seal' : `${count(p.sealDays.length)} days to seal`,
+    ...(p.revalidateDays.length > 0 ? [`${count(p.revalidateDays.length)} to double-check`] : []),
     `last ${tail} ${tail === 1 ? 'day' : 'days'} refreshed`,
-    `about ${est} requests`,
+    `about ${count(est)} requests`,
   ];
   return [{ group: 'free', label: 'Search Console data', detail: parts.join(', ') }];
 }

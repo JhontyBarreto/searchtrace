@@ -1,6 +1,6 @@
 // The run command: flags to pipeline (6.1), terminal output (6.4.1, 6.4.2). Owner: WP-F.
 import { readFile } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { StError, ExitCode } from '../../core/errors.js';
 import { createSecretRegistry } from '../../core/secrets.js';
@@ -10,7 +10,7 @@ import { loadConfig } from '../../core/config.js';
 import { PHASE_LABEL, runPipelineWith } from '../../pipeline/run.js';
 import { toolVersion } from '../../pipeline/context.js';
 import { fmtDate, fmtInt, fmtMoney, lowerFirst } from '../../report/format.js';
-import { colorOn, out, parseFlags, printError, resolveDeps, resolveDir, type CliDeps } from '../prompt.js';
+import { colorOn, displayPath, out, parseFlags, printError, resolveDeps, resolveDir, type CliDeps } from '../prompt.js';
 
 const EXIT_NUMBER: Record<ExitCodeName, number> = {
   ok: ExitCode.OK, error: ExitCode.ERROR, config: ExitCode.CONFIG, auth: ExitCode.AUTH, partial: ExitCode.PARTIAL,
@@ -92,7 +92,7 @@ function phaseDetail(p: PhaseResult): string {
 
 interface FindingsDoc {
   headline?: { sentence?: string; verdict_sentence?: string };
-  findings?: { id: string; kind: string; template?: string; real: string; real_label: string; badge: string; sentence: string }[];
+  findings?: { id: string; kind: string; template?: string; real: string; real_label: string; badge: string; sentence: string; cause?: string | null; cause_label?: string }[];
 }
 
 /** 6.4.1: the run summary. */
@@ -145,7 +145,11 @@ export function formatRunSummary(s: RunSummary, o: { property: string; config: C
   const coverage = fs.find((f) => f.template === 'coverage');
   if (worth.length || coverage) {
     lines.push('', 'Also worth knowing');
-    for (const f of worth) lines.push(...wrap(`· ${f.real_label}: ${lowerFirst(f.sentence.replace(/\.$/, ''))} (${f.badge})`, '  ', 100, '    '));
+    for (const f of worth) {
+      // The badge rates the cause, so it goes with the cause; an unnamed cause gets neither.
+      const why = f.cause && f.cause !== 'unknown' ? ` · Why: ${f.cause_label} (${f.badge})` : '';
+      lines.push(...wrap(`· ${f.real_label}: ${lowerFirst(f.sentence.replace(/\.$/, ''))}${why}`, '  ', 100, '    '));
+    }
     if (coverage) {
       const parts = coverage.sentence.split(/(?<=\.)\s+/);
       const short = parts.length > 2 ? `${parts[0]} ${parts[parts.length - 1]}` : coverage.sentence;
@@ -154,12 +158,12 @@ export function formatRunSummary(s: RunSummary, o: { property: string; config: C
   }
 
   lines.push('');
-  const dirArg = o.dir === join(o.cwd, 'searchtrace-data') ? '' : ` --dir ${relative(o.cwd, o.dir) || '.'}`;
+  const dirArg = o.dir === join(o.cwd, 'searchtrace-data') ? '' : ` --dir ${displayPath(o.cwd, o.dir)}`;
   if (s.reportPath) lines.push(`Report   ${pathToFileURL(s.reportPath).href}`);
   lines.push(`Why      npx searchtrace why${dirArg}`);
   if (s.graphPath) {
     const nodes = last.get('graph')?.rows ?? 0;
-    lines.push(`Graph    ${relative(o.cwd, s.graphPath) || s.graphPath} (${fmtInt(nodes)} nodes) · ask it in Claude: see docs/GRAPHIFY.md`);
+    lines.push(`Graph    ${displayPath(o.cwd, s.graphPath)} (${fmtInt(nodes)} nodes) · ask it in Claude: see docs/GRAPHIFY.md`);
   }
   if (s.exit === 'partial') lines.push('', "Some steps didn't finish. The report uses everything collected so far.");
   return `${lines.join('\n')}\n`;

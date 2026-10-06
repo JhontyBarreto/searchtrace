@@ -238,7 +238,10 @@ export function buildGraph(i: GraphInput): GraphDoc {
     const snap = firstSnap.get(p.url);
     const inGsc = !!st || !snap || p.firstSeen < ptDate(snap);
     const insp = latestInspection.get(p.url);
-    const id = g.node('page', p.url, pathOf(p.url) || '/', inGsc || !snap ? gscPathFor(ix, p.firstSeen) : partitionHolding(ix, 'crawl', snap), {
+    // graphify ignores a query with no letters or digits, so a bare "/" can never be asked about;
+    // "/ (homepage)" can ("graphify explain homepage").
+    const path = pathOf(p.url) || '/';
+    const id = g.node('page', p.url, path === '/' ? '/ (homepage)' : path, inGsc || !snap ? gscPathFor(ix, p.firstSeen) : partitionHolding(ix, 'crawl', snap), {
       url: p.url, template: templateOf(p.url), first_seen: p.firstSeen, last_seen: p.lastSeen,
       clicks_28d: st?.c28 ?? 0, impr_28d: st?.i28 ?? 0, pos_28d: st && st.i28 > 0 ? st.ps28 / st.i28 : null,
       delta_clicks: st ? st.c28 - st.cBase : 0, real: pageReal.get(p.url) ?? null,

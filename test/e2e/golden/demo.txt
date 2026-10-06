@@ -1,0 +1,4 @@
+Building a demo site (Pipewell Plumbing, made up) with 16 months of history...
+Report: file://<DATA>/reports/latest.html
+It shows every kind of answer once: a Google update, your own change, AI Overviews, normal wobble and not enough data.
+Try: npx searchtrace why --dir <DATA>

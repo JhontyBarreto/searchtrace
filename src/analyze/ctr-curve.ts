@@ -40,7 +40,8 @@ const CALIBRATION_RANGE: [number, number] = [0.8, 1.25];
 const FALLBACK_THETA = [-0.85, 0, 0, 0, 1.2];
 
 /** A day-level named cell; `date` lets the holdout calibration split it (cells without one only train). */
-export type DatedCurveCell = CurveCell & { date?: IsoDate };
+/** CurveCell carries an optional date (core/types.ts); kept as an alias for readability. */
+export type DatedCurveCell = CurveCell;
 
 export function segmentOf(device: 'desktop' | 'mobile', brand: boolean): Segment {
   return `${device}|${brand ? 'brand' : 'nonbrand'}`;
@@ -382,7 +383,7 @@ const usable = (c: DatedCurveCell): boolean =>
  * window are ignored, and dated cells on or after holdoutFrom form the calibration holdout.
  */
 export function fitCurve(cellsIn: CurveCell[], o: { fitWindow: [IsoDate, IsoDate]; holdoutFrom: IsoDate }): CtrCurve {
-  const cells = cellsIn as DatedCurveCell[];
+  const cells: DatedCurveCell[] = cellsIn;
   const [from, to] = o.fitWindow;
   const inFit = (c: DatedCurveCell): boolean => usable(c) && (c.date === undefined || (c.date >= from && c.date <= to));
   const isHoldout = (c: DatedCurveCell): boolean => c.date !== undefined && c.date >= o.holdoutFrom;

@@ -35,7 +35,7 @@ export const REAUTH_FIX = [
 
 const MISSING_FIX = 'Run `npx searchtrace setup`, or pass --credentials <file>.';
 
-/** The GoogleAuth this module returns: the contract plus where the credential came from and a forced refresh. */
+/** The GoogleAuth this module returns: source and invalidate (optional in the contract) are always set. */
 export interface LoadedGoogleAuth extends GoogleAuth {
   /** Where the credential came from, e.g. "/path/key.json" or "env SEARCHTRACE_GOOGLE_KEY". Never the content. */
   source: string;
@@ -476,7 +476,7 @@ export async function googleJson<T>(auth: GoogleAuth, fetchFn: Fetch, req: HttpR
       const status = (e as { status?: unknown }).status;
       if (e instanceof StError && e.code === 'http' && typeof status === 'number') {
         if (status === 401 && attempt === 1) {
-          (auth as Partial<LoadedGoogleAuth>).invalidate?.();
+          auth.invalidate?.();
           continue;
         }
         throw mapGoogleError(status, null, auth, c);
@@ -485,7 +485,7 @@ export async function googleJson<T>(auth: GoogleAuth, fetchFn: Fetch, req: HttpR
     }
     if (res.status >= 200 && res.status < 300) return res.data;
     if (res.status === 401 && attempt === 1) {
-      (auth as Partial<LoadedGoogleAuth>).invalidate?.();
+      auth.invalidate?.();
       continue;
     }
     throw mapGoogleError(res.status, res.data, auth, c);

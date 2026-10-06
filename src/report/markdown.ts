@@ -5,14 +5,15 @@
 import { diffDays } from '../core/time.js';
 import type { AnalysisOutput, Finding, ReportContext, Verdict } from '../core/types.js';
 import {
-  BADGE, CAUSE_LABEL, REAL_LABEL, REMAINDER_LABEL, answerSentences, displayGroups, findingFalsifier, findingSentence,
+  BADGE, CAUSE_LABEL, REAL_LABEL, REMAINDER_NOTE, answerSentences, displayGroups, findingFalsifier, findingSentence,
   renderSentence,
 } from './copy.js';
 import { mdEscape, safeHref } from './escape.js';
 import { fmtAbsPct, fmtDate, fmtInt, fmtMoney, fmtSignedInt } from './format.js';
 import { gscLink } from './gsc-links.js';
 import {
-  TABLE_CAP, ladder, phaseLabel, scorecardCells, selectFindings, siteChangeCells, statusWord,
+  TABLE_CAP, beforeRecordingSentence, joinNotes, ladder, olderUpdatesLine, phaseLabel, scorecardCells, scorecardRows, selectFindings,
+  siteChangeCells, statusWord, whyText,
 } from './html.js';
 
 const LABEL_ORDER: Verdict[] = ['signal', 'unclear', 'underpowered', 'noise'];
@@ -25,7 +26,8 @@ function link(url: string | null, text: string): string {
 
 function findingLine(f: Finding, property: string): string {
   const check = f.verify ? ` ${link(gscLink(property, f.verify), 'Check it yourself')}` : '';
-  const label = f.reason === 'fact' ? `**${BADGE.EXTRACTED}**` : `**${mdEscape(REAL_LABEL[f.real])}** (${mdEscape(BADGE[f.causeConfidence])})`;
+  const why = whyText(f);
+  const label = f.reason === 'fact' ? `**${BADGE.EXTRACTED}**` : `**${mdEscape(REAL_LABEL[f.real])}**${why ? ` · ${mdEscape(why)} ·` : ''}`;
   return `- ${label} **${mdEscape(f.unit.label)}**: ` +
     `${mdEscape(findingSentence(f))}${check}`;
 }
@@ -60,16 +62,17 @@ export function renderMarkdown(out: AnalysisOutput, ctx: ReportContext): string 
   if (!out.headline.boring && sel.head) {
     md.push(`**Is it real?** ${mdEscape(REAL_LABEL[sel.head.real])} · **Why?** ${mdEscape(CAUSE_LABEL[sel.head.cause ?? 'unknown'])} ` +
       `(${mdEscape(BADGE[sel.head.causeConfidence])})`, '');
+    md.push(`_${mdEscape(findingFalsifier(sel.head))}_`, '');
   }
   if (sel.alsoWorth.length) md.push('**Also worth knowing**', '', ...findingLines(sel.alsoWorth, p, ''), '');
 
   md.push('## Where the clicks went', '');
   const site = out.scopes.find((x) => x.unit.level === 'site');
   if (site) {
-    const rows = displayGroups(site.bars, site.ci95 as Record<string, [number, number]> | null)
-      .map((r) => [r.label, fmtSignedInt(r.value), r.ci ? `${fmtSignedInt(r.ci[0])} to ${fmtSignedInt(r.ci[1])}` : 'n/a']);
-    rows.push(['Total', fmtSignedInt(site.deltaClicks), site.ci95?.total ? `${fmtSignedInt(site.ci95.total[0])} to ${fmtSignedInt(site.ci95.total[1])}` : 'n/a']);
-    md.push(...table(['Part', 'Clicks', '95% range'], rows, rows.length, 'rows'), '', `_${mdEscape(REMAINDER_LABEL)}: counted in the parts above._`, '');
+    const rows = displayGroups(site.bars, site.ci95)
+      .map((r) => [r.label, fmtSignedInt(r.value), r.ci ? `${fmtSignedInt(r.ci[0])} to ${fmtSignedInt(r.ci[1])}` : 'no range yet']);
+    rows.push(['Total', fmtSignedInt(site.deltaClicks), site.ci95?.total ? `${fmtSignedInt(site.ci95.total[0])} to ${fmtSignedInt(site.ci95.total[1])}` : 'no range yet']);
+    md.push(...table(['Part', 'Clicks', '95% range'], rows, rows.length, 'rows'), '', `_${mdEscape(REMAINDER_NOTE)}_`, '');
   } else {
     md.push('_No click breakdown yet._', '');
   }
@@ -83,15 +86,17 @@ export function renderMarkdown(out: AnalysisOutput, ctx: ReportContext): string 
   if (sel.freshness) md.push(mdEscape(sel.freshness), '');
 
   md.push('## Google update scorecard', '');
-  const rows = [...out.scorecard].sort((a, b) => (a.begin < b.begin ? 1 : a.begin > b.begin ? -1 : 0));
+  const { shown: rows, older } = scorecardRows(out);
   if (rows.length) {
     md.push(...table(['Update', 'Dates', 'Clicks change (range)', 'Impressions change (range)', 'Verdict', 'Notes'], rows.map((r) => {
       const c = scorecardCells(r, out);
-      return [r.title, c.dates, c.clicks, c.impressions, c.verdict, c.notes];
+      return [c.name, c.dates, c.clicks, c.impressions, c.verdict, c.notes];
     }), rows.length, 'updates'), '');
   } else {
     md.push('_No Google updates overlap your data yet._', '');
   }
+  const olderLine = olderUpdatesLine(older);
+  if (olderLine) md.push(`_${mdEscape(olderLine)}_`, '');
 
   md.push('## Pages and sections that moved', '', '### Sections of your site', '', ...findingLines(sel.templates, p, 'No sections to compare yet.'), '');
   md.push('### Pages', '', ...findingLines(sel.pages, p, 'No pages to compare yet.'), '');
@@ -101,8 +106,8 @@ export function renderMarkdown(out: AnalysisOutput, ctx: ReportContext): string 
   const facts = out.aio?.facts ?? [];
   if (facts.length) {
     md.push('### AI Overview checks', '', ...table(['Search', 'Device', 'AI Overview shown', 'Cites you?', 'Top cited sites', 'Title rewritten?'],
-      facts.map((x) => [x.keyword, x.device, `${x.aioChecks} of ${x.checks}`, x.aioChecks > 0 ? (x.cited ? 'Yes' : 'No') : 'n/a',
-        x.topDomains.slice(0, 3).join(', '), x.titleRewritten === null ? 'n/a' : x.titleRewritten ? 'Yes' : 'No']), facts.length, 'searches'), '');
+      facts.map((x) => [x.keyword, x.device, `${x.aioChecks} of ${x.checks}`, x.aioChecks > 0 ? (x.cited ? 'Yes' : 'No') : 'No AI Overview',
+        x.topDomains.slice(0, 3).join(', ') || 'none', x.titleRewritten === null ? "Can't tell" : x.titleRewritten ? 'Yes' : 'No']), facts.length, 'searches'), '');
   }
 
   md.push('## Your site changes', '');
@@ -115,7 +120,7 @@ export function renderMarkdown(out: AnalysisOutput, ctx: ReportContext): string 
   } else {
     md.push(mdEscape(renderSentence('no_site_changes', {})), '');
   }
-  if (sel.beforeRecording) md.push(mdEscape(renderSentence('before_recording', {})), '');
+  if (sel.beforeRecording) md.push(mdEscape(beforeRecordingSentence(out)), '');
 
   md.push("## What we checked and what we couldn't", '');
   let any = false;
@@ -130,7 +135,6 @@ export function renderMarkdown(out: AnalysisOutput, ctx: ReportContext): string 
     md.push(`### ${BADGE.EXTRACTED} facts`, '', ...findingLines(sel.facts, p, ''), '');
   }
   if (!any) md.push('_Everything we found is shown above._', '');
-  if (sel.head && !out.headline.boring) md.push(`_${mdEscape(findingFalsifier(sel.head))}_`, '');
 
   md.push('## What gets smarter next', '', ...table(['When', 'What', 'Status'], ladder(out, ctx).map((r) => [r.when, r.what, r.status]), 5, 'rows'), '');
 
@@ -139,7 +143,7 @@ export function renderMarkdown(out: AnalysisOutput, ctx: ReportContext): string 
   if (run && run.phases.length) {
     md.push(...table(['Step', 'Status', 'Requests', 'Cost', 'Notes'], run.phases.map((ph) => [
       phaseLabel(ph.name), statusWord(ph.status), fmtInt(Object.values(ph.requests).reduce((a, b) => a + b, 0)), fmtMoney(ph.costUsd),
-      ph.notes.join(' '),
+      joinNotes(ph.notes),
     ]), run.phases.length, 'steps'), '', `Cost this run: ${fmtMoney(run.spendUsd)}.`, '');
   } else {
     md.push('_This report was rebuilt from saved data, so no collection ran._', '');

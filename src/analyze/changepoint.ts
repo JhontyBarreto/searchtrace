@@ -377,8 +377,11 @@ export function eventWindow(e: GoogleEvent): [IsoDate, IsoDate] {
 
 const intersects = (a: [IsoDate, IsoDate], b: [IsoDate, IsoDate]): boolean => a[0] <= b[1] && b[0] <= a[1];
 
+/** Last year's 28 days around the date must average 1 a day (the daily change-point floor) to say anything. */
+const SEASONAL_MIN_TOTAL = 28;
+
 function seasonalCheck(
-  i: ChangePointInput, series: Series, date: IsoDate, ci: [number, number],
+  i: ChangePointInput, series: Series, date: IsoDate, ci: [number, number], ratioNow: number,
 ): { checked: boolean; match: boolean; ratio: number | null } {
   const hist = i.seasonalValues[series.id];
   if (!hist || diffDays(i.historyStart, i.dataThrough) + 1 < SEASONAL_HISTORY_DAYS) return { checked: false, match: false, ratio: null };
@@ -390,8 +393,13 @@ function seasonalCheck(
   for (let k = at - 14; k < at; k++) before += Math.max(0, hist.values[k] || 0);
   for (let k = at; k < at + 14; k++) after += Math.max(0, hist.values[k] || 0);
   if (!(before > 0) || !(after > 0)) return { checked: false, match: false, ratio: null };
+  // A handful of clicks last year swings on counting noise alone, so it can't speak to the season.
+  if (before + after < SEASONAL_MIN_TOTAL) return { checked: false, match: false, ratio: null };
   const ratio = after / before;
-  return { checked: true, match: ratio >= ci[0] && ratio <= ci[1], ratio };
+  // "The same thing happened last year" needs last year to have moved the same way: a flat year
+  // can sit inside a wide interval without being the same thing.
+  const sameWay = (ratio - 1) * (ratioNow - 1) > 0;
+  return { checked: true, match: sameWay && ratio >= ci[0] && ratio <= ci[1], ratio };
 }
 
 function localiseFor(i: ChangePointInput, pr: Prepared, date: IsoDate): LocaliseResult | null {
@@ -418,6 +426,13 @@ function localiseFor(i: ChangePointInput, pr: Prepared, date: IsoDate): Localise
 function round(x: number, d = 1): number {
   const f = 10 ** d;
   return Math.round(x * f) / f;
+}
+
+/** A daily average for evidence lines: whole numbers with thousands separators from 10, one decimal below. */
+function perDay(x: number): string {
+  if (!Number.isFinite(x)) return 'n/a';
+  if (Math.abs(x) < 10) return String(Math.round(x * 10) / 10);
+  return String(Math.round(x)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
 function buildFinding(
@@ -461,29 +476,39 @@ function buildFinding(
   else if (outage) cause = 'outage';
 
   let template: Finding['template'] = 'change_point';
-  let slots: Finding['slots'] = { metric, unit: unit.label, pct: Math.abs(cp.ratio - 1), date: cp.date, d1: cp.dateWindow[0], d2: cp.dateWindow[1], direction };
+  // Daily levels before and after (weekday-adjusted), so the report can say "from about 0.1 to 12
+  // a day" when a percent would be meaningless (a page that only just started showing up).
+  const levels = { from: round(e.before, 2), to: round(e.after, 2) };
+  let slots: Finding['slots'] = { metric, unit: unit.label, pct: Math.abs(cp.ratio - 1), date: cp.date, d1: cp.dateWindow[0], d2: cp.dateWindow[1], direction, ...levels };
   if (cp.tooRecent) {
     template = 'too_recent';
-    slots = { date: cp.date, check_date: addDays(cp.date, RECENT_DAYS) };
+    // metric and unit name the series, so two too-recent changes on one page read differently.
+    slots = { metric, unit: unit.label, date: cp.date, check_date: addDays(cp.date, RECENT_DAYS), direction };
   } else if (extra.measurement && metric === 'impressions') {
     template = 'reporting_artefact';
     slots = { metric, date: cp.date, event: extra.measurement.title };
   } else if (cp.shape === 'gradual') {
     template = 'gradual';
-    slots = { metric, unit: unit.label, slope: Math.abs(cp.slopePerWeek ?? 0), date: cp.date, direction };
+    // slopePerWeek is in counts per week, per week (Theil-Sen over weekly rates). The sentence wants
+    // a share of the starting level, which only means something when there was a level to start from.
+    const weekly = 7 * e.before;
+    const rel = cp.slopePerWeek !== null && weekly >= 7 ? Math.abs(cp.slopePerWeek) / weekly : null;
+    slots = { metric, unit: unit.label, date: cp.date, direction, ...levels, ...(rel !== null ? { slope: round(rel, 4) } : {}) };
   }
+  // A change we can't attribute says which check stopped it (the report words the IdCheck name).
+  if (v.verdict === 'unclear' && v.failed[0] && (template === 'change_point' || template === 'gradual')) slots = { ...slots, check: v.failed[0].name };
 
   const where = layout.gscDay(cp.date);
   const evidence: EvidenceRef[] = [
     {
       type: 'gsc', confidence: 'EXTRACTED', partition: where, key: { series: pr.series.id },
-      summary: `Daily ${metric} on ${unit.label}: about ${round(e.before)} before ${cp.date}, ${round(e.after)} after`,
+      summary: `Daily ${metric} on ${unit.label}: about ${perDay(e.before)} before ${cp.date}, ${perDay(e.after)} after`,
     },
     {
       type: 'statistic', confidence: confidenceFor(v.verdict, false), partition: where, key: { series: pr.series.id },
       summary: cp.tooRecent
         ? `Possible change on ${unit.label} ${metric} from ${cp.date}, too recent to judge`
-        : `Change point on ${unit.label} ${metric}, ${cp.date} (likely ${cp.dateWindow[0]} to ${cp.dateWindow[1]})`,
+        : `Change point on ${unit.label} ${metric}, ${cp.date}${cp.dateWindow[0] === cp.dateWindow[1] ? '' : ` (likely ${cp.dateWindow[0]} to ${cp.dateWindow[1]})`}`,
     },
   ];
   if (cp.localisation) {
@@ -579,7 +604,7 @@ export function analyzeChangePoints(i: ChangePointInput): ChangePointOutput {
       const dateWindow: [IsoDate, IsoDate] = [pr.dateOf(loc.window[0]), windowEnd > i.dataThrough ? i.dataThrough : windowEnd];
       const touching = events.filter((ev) => intersects(dateWindow, eventWindow(ev)));
       const measurement = touching.find((ev) => ev.kind === 'data_anomaly') ?? null;
-      const seasonal = loc.tooRecent ? { checked: false, match: false, ratio: null } : seasonalCheck(i, pr.series, date, loc.effect.ci95);
+      const seasonal = loc.tooRecent ? { checked: false, match: false, ratio: null } : seasonalCheck(i, pr.series, date, loc.effect.ci95, loc.effect.ratio);
       const cp: ChangePoint = {
         seriesId: pr.series.id,
         unit: pr.series.unit,

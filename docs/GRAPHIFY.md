@@ -26,7 +26,8 @@ cd searchtrace-data
 graphify cluster-only . --no-viz --no-label        # topic groups + GRAPH_REPORT.md, no AI call, no cost
 graphify query "which pages lost clicks after the September update" --budget 1500
 graphify explain "/blog/keyword-cannibalization-ai-overviews"
-graphify path "September 2026 spam update" "/"
+graphify explain "homepage"        # the homepage node is "/ (homepage)": graphify ignores a bare "/"
+graphify path "September 2026 spam update" "homepage"
 
 # Ask it from Claude Code (needs graphify's MCP extra once):
 uv tool install --force "graphifyy[mcp]"

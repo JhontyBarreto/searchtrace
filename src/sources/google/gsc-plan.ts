@@ -3,7 +3,8 @@
 // Rules (spec 4.2, "Planning"):
 // 1. sealDays: every day d with lower <= d < F that has no sealed file. lower is the first day with
 //    data (from earlier sealed files) or, on the first run, today minus backfillMonths months plus
-//    one day. Days on or after F (firstIncompleteDate) are never sealed: Google is still filling them in.
+//    one day. A full 16-month backfill starts at the 1st of that month instead (retentionStart),
+//    because Google still serves those days. Days on or after F (firstIncompleteDate) are never sealed: Google is still filling them in.
 // 2. revalidateDays: sealed days that were sealed while young (fetchedAt - start of the day <
 //    revalidateAfterDays days), are now at least revalidateAfterDays old, and have not been
 //    revalidated. A day already at revision 2 or more has been revalidated (revisions are only
@@ -36,6 +37,16 @@ export function subtractMonths(d: IsoDate, months: number): IsoDate {
 /** First day of a backfill of `months` months ending today: today minus months, plus one day. */
 export function backfillStart(today: IsoDate, months: number): IsoDate {
   return addDays(subtractMonths(today, months), 1);
+}
+
+/**
+ * The earliest day worth asking Search Console for: the 1st of the month 16 months back. Google's
+ * "16 months" is loose (measured on 2026-10-06: final data was still served back to 2025-05-25),
+ * and asking for a day it no longer has just returns no rows, so a full backfill starts here
+ * rather than at today minus 16 months. The range calls are per calendar month either way.
+ */
+export function retentionStart(today: IsoDate): IsoDate {
+  return `${subtractMonths(today, GSC_RETENTION_MONTHS).slice(0, 7)}-01`;
 }
 
 /** firstIncompleteDate F, or today minus 3 days when the probe has not told us. Never later than today. */
@@ -79,12 +90,15 @@ export function sealedYoung(day: IsoDate, fetchedAt: string, afterDays: number):
 export function planGsc(s: GscPlanState): GscPlan {
   const F = effectiveIncompleteDate(s);
   const latest = latestRevisions(s.sealed);
-  const retention = backfillStart(s.today, GSC_RETENTION_MONTHS);
+  const retention = retentionStart(s.today);
+  const months = Math.max(1, Math.floor(s.backfillMonths));
   const lower = s.firstDataDay
     ? s.firstDataDay > retention
       ? s.firstDataDay
       : retention
-    : backfillStart(s.today, Math.max(1, Math.floor(s.backfillMonths)));
+    : months >= GSC_RETENTION_MONTHS
+      ? retention
+      : backfillStart(s.today, months);
   const lastSealable = addDays(F, -1);
   const sealDays = lower <= lastSealable ? dateRange(lower, lastSealable).filter((d) => !latest.has(d)) : [];
 

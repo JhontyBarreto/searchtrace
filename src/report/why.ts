@@ -13,7 +13,7 @@ import {
   BADGE, CAUSE_LABEL, REAL_LABEL, REMAINDER_LABEL, answerSentences, displayGroups, findingAlternatives, findingFalsifier,
   findingSentence, headlineFinding, renderSentence,
 } from './copy.js';
-import { fmtDate, fmtSignedInt } from './format.js';
+import { eventName, fmtDate, fmtSignedInt } from './format.js';
 import { gscLink } from './gsc-links.js';
 
 const WIDTH = 100;
@@ -21,7 +21,7 @@ const FINDING_ID_RE = /^f[a-z2-7]{16}$/;
 const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export interface WhyMatch {
-  kind: 'headline' | 'finding' | 'page' | 'date' | 'query' | 'none';
+  kind: 'headline' | 'finding' | 'page' | 'template' | 'date' | 'query' | 'none';
   findings: Finding[];
   events: UpdateRow[];
   suggestions: string[];
@@ -85,6 +85,15 @@ export function matchWhy(out: AnalysisOutput, target: string | null): WhyMatch {
     const f = out.findings.find((x) => x.id === t);
     return f ? { kind: 'finding', findings: [f], events: [], suggestions: [] } : none();
   }
+  // A section of the site, by its template key: "/blog/*" (also "/blog/" and "/blog").
+  if (t.startsWith('/')) {
+    const bare = (k: string): string => k.replace(/\/?\*$/, '');
+    const tpl = sorted.filter((f) => f.unit.level === 'template' && (f.unit.key === t || bare(f.unit.key) === t.replace(/\/$/, '')));
+    // Lead with the section's own explanation (its waterfall), then site-change impacts, then the rest.
+    const rank = (f: Finding): number => (f.kind === 'waterfall' ? 0 : f.kind === 'site_change_impact' ? 1 : 2);
+    tpl.sort((a, b) => rank(a) - rank(b));
+    if (tpl.length && t !== '/') return { kind: 'template', findings: tpl, events: [], suggestions: [] };
+  }
   if (t.startsWith('/') || /^https?:\/\//i.test(t)) {
     const isUrl = /^https?:\/\//i.test(t);
     const wantUrl = isUrl ? (() => { try { return normalizeUrl(t); } catch { return null; } })() : null;
@@ -96,7 +105,11 @@ export function matchWhy(out: AnalysisOutput, target: string | null): WhyMatch {
     if (!hit.length) hit = keys.filter((k) => (safePath(k) ?? '').endsWith(wantPath) && wantPath !== '/');
     if (!hit.length) return none();
     const set = new Set(hit);
-    const findings = sorted.filter((f) => set.has(f.unit.key) || (f.verify?.page !== undefined && set.has(f.verify.page)));
+    // Like a section: lead with the page's own 28-day explanation (its waterfall), then the rest.
+    const rank = (f: Finding): number => (f.kind === 'waterfall' ? 0 : f.kind === 'site_change_impact' ? 1 : 2);
+    const findings = sorted
+      .filter((f) => set.has(f.unit.key) || (f.verify?.page !== undefined && set.has(f.verify.page)))
+      .sort((a, b) => rank(a) - rank(b) || byPriority(a, b));
     return { kind: 'page', findings, events: [], suggestions: [] };
   }
   if (ISO_RE.test(t)) {
@@ -136,7 +149,11 @@ function period(f: Finding): string {
     const L = diffDays(f.windows.current[0], f.windows.current[1]) + 1;
     return `last ${L} days vs the ${L} before`;
   }
-  if (f.dateWindow && f.date) return `around ${fmtDate(f.date)} (likely ${fmtDate(f.dateWindow[0])} to ${fmtDate(f.dateWindow[1])})`;
+  if (f.dateWindow && f.date) {
+    return f.dateWindow[0] === f.dateWindow[1]
+      ? `around ${fmtDate(f.date)}`
+      : `around ${fmtDate(f.date)} (likely ${fmtDate(f.dateWindow[0])} to ${fmtDate(f.dateWindow[1])})`;
+  }
   if (f.date) return `on ${fmtDate(f.date)}`;
   return 'latest data';
 }
@@ -202,7 +219,8 @@ function shortLine(f: Finding, paint: Paint): string[] {
 
 function eventLines(r: UpdateRow): string[] {
   const kind = r.kind === 'data_anomaly' ? CAUSE_LABEL.data_anomaly : r.kind === 'outage' ? CAUSE_LABEL.outage : 'Google update';
-  const lines = [cleanTerminal(`  ${r.title} (${kind}, ${fmtDate(r.begin)} to ${r.end ? fmtDate(r.end) : 'ongoing'})`)];
+  const span = r.end === r.begin ? fmtDate(r.begin) : `${fmtDate(r.begin)} to ${r.end ? fmtDate(r.end) : 'ongoing'}`;
+  const lines = [cleanTerminal(`  ${eventName(r.title)} (${kind}, ${span})`)];
   if (r.kind === 'data_anomaly') {
     lines.push(...wrap(renderSentence('reporting_artefact', { metric: 'impressions and average position', date: r.begin, event: r.title }), '    '));
   }
@@ -237,11 +255,16 @@ export function renderWhy(out: AnalysisOutput, target: string | null, o: { color
     }
     case 'finding':
     case 'page':
+    case 'template':
     case 'query': {
-      const [first, ...others] = m.findings;
+      const [first, ...rest] = m.findings;
+      // The same sentence twice (a section and its site change) adds nothing: show it once.
+      const shown = new Set([findingSentence(first)]);
+      const others = rest.filter((f) => !shown.has(findingSentence(f)) && shown.add(findingSentence(f)));
       lines.push(...evidenceChain(out, first, paint, { headline: first.kind === 'headline' }));
       if (others.length) {
-        lines.push('', paint.bold(m.kind === 'query' ? 'Also about this search' : 'Also about this page'));
+        const about = m.kind === 'query' ? 'Also about this search' : m.kind === 'template' ? 'Also about this section' : 'Also about this page';
+        lines.push('', paint.bold(about));
         for (const f of others.slice(0, 5)) lines.push(...shortLine(f, paint));
         if (others.length > 5) lines.push(`  and ${others.length - 5} more (searchtrace why --json)`);
       }

@@ -10,7 +10,7 @@ import { StError } from '../../src/core/errors.js';
 import { createSecretRegistry } from '../../src/core/secrets.js';
 import { fixedClock } from '../../src/core/time.js';
 import type { GoogleEvent, PhaseResult, RunFlags, RunContext } from '../../src/core/types.js';
-import { exitFor, runPipelineWith as runPipeline, withSeedEvents } from '../../src/pipeline/run.js';
+import { exitFor, mergeCollectPolls, runPipelineWith as runPipeline, withSeedEvents } from '../../src/pipeline/run.js';
 import { openStore } from '../../src/store/store.js';
 import { seedDataDir } from '../helpers/fixture-data.js';
 import { memoryIndex } from '../helpers/memory-index.js';
@@ -98,10 +98,13 @@ describe('runPipeline', () => {
   it('runs every phase in order offline, writes reports and graph, and exits ok', async () => {
     await seeded();
     const s = await run({ offline: true });
+    // The updates collector runs even offline (its own plan decides): it fetches nothing then, but
+    // stores the bundled list once so the index and graph see Google's updates (4.9 note, WP-B).
     expect(s.phases.map((p) => `${p.name}:${p.status}`)).toEqual([
-      'lock:ok', 'updates:skipped', 'gsc:skipped', 'index:ok', 'crawl:skipped', 'inspect:skipped', 'serp_collect:skipped',
+      'lock:ok', 'updates:ok', 'gsc:skipped', 'index:ok', 'crawl:skipped', 'inspect:skipped', 'serp_collect:skipped',
       'analyze:ok', 'serp_post:skipped', 'report:ok', 'graph:ok',
     ]);
+    expect(m.updates.execute).toHaveBeenCalledTimes(1);
     expect(s.exit).toBe('ok');
     expect(s.dataThrough).toBe('2026-10-03');
     expect(s.headline).toContain('In the last 28 days');
@@ -216,12 +219,33 @@ describe('runPipeline', () => {
       .mockResolvedValueOnce({ lines: [], estRequests: 0, estUsd: 0, payload: { pendingTaskIds: [] }, skip: null })
       .mockResolvedValueOnce({ lines: [], estRequests: 1, estUsd: 0, payload: { pendingTaskIds: ['t1'] }, skip: null })
       .mockResolvedValueOnce({ lines: [], estRequests: 0, estUsd: 0, payload: { pendingTaskIds: [] }, skip: null });
+    const collectsBefore = m.serpCollect.execute.mock.calls.length;
     const s = await run({ waitMinutes: 2 }, { sleep });
     expect(m.serpPoster.execute).toHaveBeenCalledTimes(1);
     expect(sleep).toHaveBeenCalledTimes(2);
     expect(s.spendUsd).toBeCloseTo(0.0036);
-    expect(s.phases.filter((p) => p.name === 'analyze')).toHaveLength(2);
-    expect(s.phases.filter((p) => p.name === 'graph')).toHaveLength(2);
+    // One row per step: the poll folds into "AI Overview results", and the refreshed analysis,
+    // report and graph replace the first ones (a 20-minute wait used to add 40 rows).
+    expect(m.serpCollect.execute.mock.calls.length - collectsBefore).toBe(2);
+    for (const name of ['serp_collect', 'analyze', 'report', 'graph']) expect(s.phases.filter((p) => p.name === name)).toHaveLength(1);
+    expect(s.phases.find((p) => p.name === 'serp_collect')?.notes).toContain('Collected 0 AI Overview checks while waiting.');
+  });
+
+  it('merges --wait polls into one step that says what is still outstanding', () => {
+    const at = '2026-10-06T16:17:00Z';
+    const ph = (rows: number, notes: string[], req: Record<string, number>, status: 'ok' | 'partial' = 'ok') => ({
+      name: 'serp_collect' as const, status, startedAt: at, endedAt: at, requests: req, rows, costUsd: 0, partitions: rows ? [`serp/2026/10/p${rows}.ndjson.gz`] : [], notes, errors: [],
+    });
+    const merged = mergeCollectPolls(ph(0, [], { 'dataforseo.id_list': 1 }), [
+      ph(48, ['Collected 48 AI Overview checks.', '117 checks are still being processed by DataForSEO and will be collected next run.'], { 'dataforseo.tasks_ready': 1, 'dataforseo.task_get': 48 }),
+      ph(37, ['Collected 37 AI Overview checks.', '1 check could not be read this time; they will be tried again next run.'], { 'dataforseo.tasks_ready': 1, 'dataforseo.task_get': 38 }, 'partial'),
+      ph(0, ['1 check is still being processed by DataForSEO and will be collected next run.'], { 'dataforseo.tasks_ready': 1 }),
+    ]);
+    expect(merged.requests).toEqual({ 'dataforseo.id_list': 1, 'dataforseo.tasks_ready': 3, 'dataforseo.task_get': 86 });
+    expect(merged.rows).toBe(85);
+    expect(merged.partitions).toHaveLength(2);
+    expect(merged.status).toBe('partial');
+    expect(merged.notes).toEqual(['Collected 85 AI Overview checks while waiting.', '1 check is still being processed by DataForSEO and will be collected next run.']);
   });
 
   it('writes the step summary in CI', async () => {
@@ -255,6 +279,10 @@ describe('exitFor', () => {
     expect(exitFor([ph('failed', 'internal')])).toBe('partial');
     expect(exitFor([ph('failed', 'graph_not_ours')])).toBe('config');
     expect(exitFor([ph('failed', 'internal'), ph('failed', 'permission'), ph('failed', 'config')])).toBe('auth');
+  });
+
+  it('treats a deferred phase (URL Inspection quota reached for the day) as a warning, not exit 4', () => {
+    expect(exitFor([ph('ok'), { ...ph('deferred', 'quota'), name: 'inspect' }])).toBe('ok');
   });
 });
 

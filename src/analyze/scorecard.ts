@@ -226,7 +226,7 @@ function toFinding(d: Draft, i: ScorecardInput, D: IsoDate, q: { clicks: number 
   const cause: Finding['cause'] = d.ev.kind === 'outage' ? 'outage' : d.ev.kind === 'data_anomaly' ? 'data_anomaly' : 'google_update';
   const slots: Finding['slots'] = {
     update: d.ev.title,
-    dates: `${row.begin} to ${end}`,
+    dates: end === row.begin ? row.begin : `${row.begin} to ${end}`,
     clicks_pct: row.clicks ? row.clicks.tau : '',
     clicks_label: label(row.clicks),
     impr_pct: row.impressions ? row.impressions.tau : '',

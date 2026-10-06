@@ -255,6 +255,15 @@ describe('analyzeAio', () => {
     expect(fd?.effect.absolute).toBeLessThan(0);
   });
 
+  it('uses the configured false-discovery rate (AioInput.fdrQ), not a fixed 0.10', () => {
+    const specs = population(150, { aioShare: 0.4, mult: (w) => (w === 'c' ? 0.7 : 1) });
+    const did = (fdrQ?: number) => analyzeAio({ ...input(specs, { seed: 'sig' }), ...(fdrQ === undefined ? {} : { fdrQ }) }).estimates.find((e) => e.estimator === 'did');
+    expect(did()?.real).toBe('signal');
+    expect(did(0.1)?.real).toBe('signal');
+    // The bootstrap p can't go below 1/(B+1), so a q-value threshold of 0.0001 can never be met.
+    expect(did(1e-4)?.real).toBe('underpowered');
+  });
+
   it('42: a level gap with no change shows in the cross-section, the DiD is about zero, and the copy says comparison', () => {
     const specs = population(150, { aioShare: 0.4, mult: () => 0.7 });
     const out = analyzeAio(input(specs, { seed: 't42' }));

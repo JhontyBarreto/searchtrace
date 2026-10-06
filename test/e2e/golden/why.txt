@@ -1,0 +1,27 @@
+sc-domain:pipewell-plumbing.example · last 28 days vs the 28 before
+
+  Normal wobble · Why: Your change · Possible
+  In the last 28 days Google sent you 34,725 clicks, 3,037 fewer than the 28 days before (-8%).
+  This is normal wobble. Clicks moved -8%, and swings this size happen about 1 in 6 four-week
+  periods in your history. Across the whole site that's nothing to act on, but parts of it did
+  change.
+
+  Where the clicks went (estimated, 95% range)
+    Fewer or more searches            +227    (-42 to +549)
+    Ranking                            -24    (-57 to +5)
+    Same spot, different click rate -3,262    (-4,518 to -2,116)
+    AI Overview citation               +23    (-121 to +209)
+    Appeared or disappeared             -1    (-7 to +0)
+    Unattributed searches                     (included above; private or not reported)
+
+  Evidence
+    Measured   Search Console: 37,762 -> 34,725 clicks, 1,035,359 -> 1,032,860 impressions, position 6.3 -> 6.3   gsc/2026/10/2026-10-03.ndjson.gz
+    Estimated  Click waterfall over 1,390 units, 1,000 bootstrap replicates: -4,357 to -1,783 clicks   gsc/2026/10/2026-10-03.ndjson.gz
+
+  Other explanations
+    Fewer searches: ruled out, impressions held (-0.2%).
+    Ranking: ruled out, average position held (6.3 to 6.3).
+    Google update: possible, it overlaps the September 2026 spam update.
+
+  What would prove this wrong: if the next 4 weeks return to the old level, this was a blip.
+  Check it yourself: https://search.google.com/search-console/performance/search-analytics?resource_id=sc-domain%3Apipewell-plumbing.example&start_date=20260809&end_date=20261003

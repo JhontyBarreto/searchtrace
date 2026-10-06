@@ -1,6 +1,7 @@
 // Weekly design: census, or certainty units plus Poisson sampling with weekday spreading (5.11.1). Owner: WP-D.
 //
-// - Eligible: candidates with average position <= 20 and >= 10 impressions in the current window.
+// - Eligible: candidates with average position <= 20 and >= 10 impressions in the current window,
+//   and no Google search operator (site:, inurl: and so on; billed at 5x and not a real search).
 // - Census when every eligible search fits the budget (pi = 1).
 // - Otherwise the 20 most negative deltaClicks and the top 20 by expectedBaseClicks are certainty
 //   units (pi = 1). The rest are Poisson-sampled with pi proportional to expectedBaseClicks,
@@ -29,11 +30,24 @@ const EPS = 1e-9;
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const unitKey = (c: { keyword: string; device: Device }): string => `${c.keyword}|${c.device}`;
 
+/**
+ * Google search operators. A search like "site:example.com" is the owner checking their own index,
+ * not a search to watch for AI Overviews, and DataForSEO bills a task with an operator at 5 times
+ * the normal price (seen on a real run: $0.006 instead of $0.0012), which would break the budget
+ * guard's worst case. Quoted phrases are billed normally and stay eligible.
+ */
+const SEARCH_OPERATOR = /(?:^|\s)[-+]?(?:site|inurl|allinurl|intitle|allintitle|intext|allintext|inanchor|allinanchor|related|cache|info|filetype|ext|link|define|source|location|before|after|daterange):(?=\S)|\bAROUND\(\d+\)/i;
+
+export function hasSearchOperator(keyword: string): boolean {
+  return SEARCH_OPERATOR.test(keyword);
+}
+
 /** Eligible candidates, one per (keyword, device), in a stable order. */
 export function eligibleCandidates(candidates: SerpCandidate[]): SerpCandidate[] {
   const byKey = new Map<string, SerpCandidate>();
   for (const c of candidates) {
     if (!c || typeof c.keyword !== 'string' || c.keyword.trim() === '') continue;
+    if (hasSearchOperator(c.keyword)) continue;
     if (c.device !== 'desktop' && c.device !== 'mobile') continue;
     if (!(c.pbar <= 20) || !(c.impressions >= 10)) continue;
     const k = unitKey(c);

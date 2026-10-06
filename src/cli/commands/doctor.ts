@@ -2,7 +2,7 @@
 //
 // One line per check: ✓ ok, ! warning, ✗ failure (followed by its fix), i information.
 // graphify is found by reading the shebang of the `graphify` executable on PATH; nothing is spawned.
-import { constants as fsc, existsSync, readdirSync, statSync } from 'node:fs';
+import { constants as fsc, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { access, open } from 'node:fs/promises';
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { loadConfig } from '../../core/config.js';
@@ -45,15 +45,84 @@ export function credentialSource(config: Config, env: Record<string, string | un
   return existsSync(adc) ? { kind: 'file', label: adc, path: adc } : null;
 }
 
-function insideGitRepo(path: string): boolean {
+/** The working-tree root (the folder holding .git) that contains path, or null. */
+function gitRootOf(path: string): string | null {
   let dir = dirname(resolve(path));
   for (let i = 0; i < 64; i++) {
-    if (existsSync(join(dir, '.git'))) return true;
+    if (existsSync(join(dir, '.git'))) return dir;
     const up = dirname(dir);
-    if (up === dir) return false;
+    if (up === dir) return null;
     dir = up;
   }
-  return false;
+  return null;
+}
+
+/** A gitignore glob as a RegExp over a slash-separated relative path. Supports *, ?, ** and [classes]. */
+function gitGlob(glob: string): RegExp {
+  let re = '';
+  for (let i = 0; i < glob.length; i++) {
+    const ch = glob[i];
+    if (ch === '*' && glob[i + 1] === '*') {
+      if (glob[i + 2] === '/') {
+        re += '(?:.*/)?';
+        i += 2;
+      } else {
+        re += '.*';
+        i += 1;
+      }
+    } else if (ch === '*') re += '[^/]*';
+    else if (ch === '?') re += '[^/]';
+    else if (ch === '[') {
+      const close = glob.indexOf(']', i + 1);
+      if (close > i) {
+        re += `[${glob.slice(i + 1, close).replace(/^!/, '^').replace(/\\/g, '\\\\')}]`;
+        i = close;
+      } else re += '\\[';
+    } else re += ch.replace(/[.+^${}()|\\]/g, '\\$&');
+  }
+  return new RegExp(`^${re}$`);
+}
+
+/**
+ * Whether git would ignore path, from the .gitignore files between the repo root and the file plus
+ * .git/info/exclude. A simplified reading of gitignore rules (last match wins, '!' re-includes,
+ * a trailing '/' matches folders only, a pattern with a '/' is anchored to its .gitignore's folder).
+ * Read-only: nothing is spawned.
+ */
+function ignoredByGit(path: string, root: string): boolean {
+  const abs = resolve(path);
+  const sources: { base: string; file: string }[] = [{ base: root, file: join(root, '.git', 'info', 'exclude') }];
+  const parts = relative(root, dirname(abs)).split(sep).filter(Boolean);
+  for (let i = 0; i <= parts.length; i++) {
+    const base = join(root, ...parts.slice(0, i));
+    sources.push({ base, file: join(base, '.gitignore') });
+  }
+  let ignored = false;
+  for (const { base, file } of sources) {
+    let text: string;
+    try {
+      text = readFileSync(file, 'utf8');
+    } catch {
+      continue;
+    }
+    const rel = relative(base, abs).split(sep).join('/');
+    const segs = rel.split('/');
+    // Candidate paths: every ancestor folder (for folder rules) and the file itself.
+    const candidates = segs.map((_, k) => ({ path: segs.slice(0, k + 1).join('/'), isDir: k < segs.length - 1 }));
+    for (const raw of text.split(/\r?\n/)) {
+      let line = raw.replace(/(?<!\\)\s+$/, '');
+      if (!line || line.startsWith('#')) continue;
+      const negate = line.startsWith('!');
+      if (negate) line = line.slice(1);
+      const dirOnly = line.endsWith('/');
+      if (dirOnly) line = line.slice(0, -1);
+      const anchored = line.includes('/');
+      const re = gitGlob(line.replace(/^\//, ''));
+      const hit = candidates.some((c) => (!dirOnly || c.isDir) && (anchored ? re.test(c.path) : re.test(c.path.split('/').pop() ?? '')));
+      if (hit) ignored = !negate;
+    }
+  }
+  return ignored;
 }
 
 function isInside(child: string, parent: string): boolean {
@@ -139,7 +208,8 @@ async function checkCredential(c: Ctx, cfg: Config): Promise<CredentialSource | 
   const src = credentialSource(cfg, c.deps.env, c.deps.homedir);
   try {
     c.auth = await loadGoogleAuth({ config: cfg, env: c.deps.env, fetch: c.deps.fetch, secrets: c.secrets });
-    add(c, { status: 'ok', area: 'auth', text: `Google credential: ${c.auth.kind}${src ? ` from ${src.label}` : ''}` });
+    const from = src?.label ?? c.auth.source;
+    add(c, { status: 'ok', area: 'auth', text: `Google credential: ${c.auth.kind}${from ? ` from ${from}` : ''}` });
     if (c.auth.scopes.includes(RW_SCOPE)) {
       add(c, { status: 'warn', area: 'auth', text: 'This credential can change Search Console settings (webmasters scope). searchtrace only needs read access.' });
     }
@@ -231,7 +301,9 @@ async function checkQuotaAndSpend(c: Ctx, cfg: Config): Promise<void> {
     // an unreadable ledger shows as zero; the folder check reports the folder itself
   }
   const budget = Math.min(cfg.inspection.dailyBudget, Math.floor(2000 * cfg.inspection.shareOfPropertyQuota));
-  add(c, { status: 'ok', area: 'inspect', text: `Index checks used today: ${fmtInt(usedToday)} of ${fmtInt(budget)} (2,000 per property, shared with your other tools)` });
+  // doctor's own live check counts too, so a day whose budget a run used up can show one over.
+  const over = usedToday > budget ? '; the extra ones are doctor\'s own test checks' : '';
+  add(c, { status: 'ok', area: 'inspect', text: `Index checks used today: ${fmtInt(usedToday)} of ${fmtInt(budget)} (2,000 per property, shared with your other tools${over})` });
 
   if (cfg.serp.provider !== 'dataforseo') {
     add(c, { status: 'info', area: 'serp', text: 'AI Overview checks are off. Run `npx searchtrace setup --dataforseo` to turn them on (usually cents a month).' });
@@ -303,10 +375,15 @@ function checkKeyLocation(c: Ctx, src: CredentialSource | null, cfg: Config): vo
   const path = src.path as string;
   if (isInside(path, c.dir)) {
     add(c, { status: 'fail', area: 'key', text: 'The key file is inside the data folder, which you may commit', fix: MOVE_KEY_FIX });
-  } else if (insideGitRepo(path)) {
-    add(c, { status: 'warn', area: 'key', text: 'The key file is inside a git repository, where it could be committed by mistake', fix: MOVE_KEY_FIX });
   } else {
-    add(c, { status: 'ok', area: 'key', text: 'Key file is outside this folder and not in a git repo' });
+    const root = gitRootOf(path);
+    if (root && !ignoredByGit(path, root)) {
+      add(c, { status: 'warn', area: 'key', text: 'The key file is inside a git repository, where it could be committed by mistake', fix: MOVE_KEY_FIX });
+    } else if (root) {
+      add(c, { status: 'ok', area: 'key', text: "Key file is outside this folder, and the git repo it sits in ignores it (.gitignore)" });
+    } else {
+      add(c, { status: 'ok', area: 'key', text: 'Key file is outside this folder and not in a git repo' });
+    }
   }
 }
 

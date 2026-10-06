@@ -16,6 +16,7 @@ import type {
   IdCheck, IdCheckName, IsoDate, PeriodEffect, PowerInfo, ScopeDecomposition, SiteChange, SiteChangeImpact, TemplateId, Verdict,
   VerdictReason,
 } from '../core/types.js';
+import { changeSummary } from './site-change.js';
 import { GROUPS, type Group } from './waterfall.js';
 import { windowsOverlap } from './windows.js';
 
@@ -55,6 +56,8 @@ export interface SynthesisContext {
   siteChangeImpacts: SiteChangeImpact[];
   /** Ids of findings by site change id, for related links. */
   impactFindingIds: Map<string, string>;
+  /** Slots of each site change's own impact finding, so a section and its change tell the same numbers. */
+  impactSlots?: Map<string, Record<string, string | number>>;
   /** The AIO DiD estimate is a signal. */
   aioDidSignal: boolean;
   aioDid: { tau: number | null; ci95: [number, number] | null } | null;
@@ -71,6 +74,8 @@ export interface ScopeFacts {
   decomposition: ScopeDecomposition;
   groupCi: Record<Group, [number, number]> | null;
   pages: Set<string>;
+  /** Pages in the scope whose clicks moved the same way as the scope (lost clicks in a drop). */
+  movedPages: Set<string>;
   baseImpressions: number;
   curImpressions: number;
   /** Named units only: impression-weighted positions and click rates per window. */
@@ -80,7 +85,7 @@ export interface ScopeFacts {
   ctrC: number | null;
   /** Distinct searches whose average position moved in the direction of the change (by at least 0.5). */
   movedSearches: number;
-  /** Share of the scope's negative samePos held by queries with SERP checks, and by uncited AI Overview queries. */
+  /** Share of the scope's same-direction samePos held by checked searches, and by uncited AI Overview searches. */
   checkedShare: number;
   aioUncitedShare: number;
   /** Queries with at least one SERP check, and of those how many showed an AI Overview. */
@@ -101,7 +106,8 @@ export interface ScopeFacts {
   delta: number;
   phi: number;
   /** Impressions change and verdict for the "impressions, which have far more data" sentence. */
-  impressions: { tau: number; real: Verdict } | null;
+  /** The scope's impressions comparison; reason says why it isn't a verdict (too few, or too wide). */
+  impressions: { tau: number; real: Verdict; reason?: VerdictReason } | null;
 }
 
 export interface CauseResult {
@@ -189,7 +195,8 @@ export function causeForScope(s: ScopeFacts, ctx: SynthesisContext): CauseResult
     out.slots = { pb: s.pb ?? 0, pc: s.pc ?? 0, n: s.movedSearches, lo: Math.min(Math.abs(ci[0]), Math.abs(ci[1])), hi: Math.max(Math.abs(ci[0]), Math.abs(ci[1])), direction: dir };
   } else if (groups[0] === 'samePos') {
     out.usesCurve = true;
-    if (ctx.aioDidSignal && s.aioUncitedShare >= 0.5) {
+    // An uncited AI Overview explains a loss at the same spot, never a gain.
+    if (ctx.aioDidSignal && s.aioUncitedShare >= 0.5 && d.deltaClicks < 0) {
       out.cause = 'ai_overview';
       out.template = 'aio_not_cited';
       out.slots = { x: ctx.aioDid?.tau ?? 0, lo: ctx.aioDid?.ci95?.[0] ?? 0, hi: ctx.aioDid?.ci95?.[1] ?? 0 };
@@ -222,7 +229,7 @@ export function causeForScope(s: ScopeFacts, ctx: SynthesisContext): CauseResult
     if (impact.synthesis === 'site_change') {
       out.cause = 'site_change';
       out.template = 'real_site_change';
-      out.slots = siteChangeSlots(s, change, impact, dir);
+      out.slots = siteChangeSlots(s, change, impact, dir, ctx.impactSlots?.get(change.id));
     } else {
       const days = seenDays(change);
       const upd = eventsOverlapping(ctx.events, [days[0] ?? ptDate(change.deployed.to), ctx.dataThrough], ['core', 'spam'])[0];
@@ -282,16 +289,22 @@ function siteChangeInScope(s: ScopeFacts, ctx: SynthesisContext, kinds: SiteChan
   return hits.sort((a, b) => Math.abs(b.tau ?? 0) - Math.abs(a.tau ?? 0) || (a.siteChangeId < b.siteChangeId ? -1 : 1))[0] ?? null;
 }
 
-function siteChangeSlots(s: ScopeFacts, change: SiteChange, impact: SiteChangeImpact, dir: 'down' | 'up'): Record<string, string | number> {
+function siteChangeSlots(s: ScopeFacts, change: SiteChange, impact: SiteChangeImpact, dir: 'down' | 'up', own?: Record<string, string | number>): Record<string, string | number> {
   const touched = change.touched.filter((t) => s.pages.has(t.url));
   const seen = touched.filter((t) => t.googleSeen);
   const from = seen.map((t) => ptDate((t.googleSeen as NonNullable<typeof t.googleSeen>).from)).sort();
   const to = seen.map((t) => ptDate((t.googleSeen as NonNullable<typeof t.googleSeen>).to)).sort();
+  // "{k} of the {n} pages you changed lost clicks": n = changed pages in this scope, k = those whose
+  // clicks moved with the scope between the two windows.
+  // The change's own section uses the impact finding's counts (each page over its own windows).
+  const whole = own !== undefined && s.unit.level === 'template' && s.unit.key === change.templateKey && typeof own.n === 'number';
+  const n = whole ? Number(own.n) : touched.length;
+  const k = whole ? Number(own.k) : touched.filter((t) => s.movedPages.has(t.url)).length;
   return {
-    k: touched.length,
-    n: Math.max(touched.length, s.pages.size),
+    k,
+    n,
     change_date: ptDate(change.deployed.to),
-    summary: change.text ?? change.field,
+    summary: changeSummary(change, (u) => s.pages.has(u)),
     d1: from[0] ?? ptDate(change.deployed.to),
     d2: to[to.length - 1] ?? ptDate(change.deployed.to),
     ctrl: impact.controlChange ?? 0,
@@ -333,7 +346,14 @@ export function alternativesFor(s: ScopeFacts, cause: Cause | null, ctx: Synthes
   const g = groupValues(d.bars);
   const quarter = 0.25 * Math.abs(d.deltaClicks);
   const imprPct = s.baseImpressions > 0 ? s.curImpressions / s.baseImpressions - 1 : 0;
-  const ruledOut = (k: Group): boolean => !!s.groupCi && !excludesZero(s.groupCi[k]) && Math.abs(g[k]) < quarter;
+  // 5.12: ruled out when the group's CI contains 0 and it is under a quarter of the change. Also ruled
+  // out when its whole CI sits inside a quarter of the change either way: a component measured
+  // precisely as tiny ("average position 4.0 to 4.0") can't be a meaningful part of the explanation.
+  const ruledOut = (k: Group): boolean => {
+    const ci = s.groupCi?.[k];
+    if (!ci) return false;
+    return (!excludesZero(ci) && Math.abs(g[k]) < quarter) || (ci[0] > -quarter && ci[1] < quarter);
+  };
   out.push({ cause: 'demand', ruledOut: ruledOut('demand'), key: ruledOut('demand') ? 'demand_ruled_out' : 'demand_possible', slots: { impr_pct: imprPct } });
   out.push({ cause: 'rank', ruledOut: ruledOut('ranking'), key: ruledOut('ranking') ? 'rank_ruled_out' : 'rank_possible', slots: { pb: s.pb ?? 0, pc: s.pc ?? 0 } });
 
@@ -352,7 +372,8 @@ export function alternativesFor(s: ScopeFacts, cause: Cause | null, ctx: Synthes
   if (upd) out.push({ cause: 'google_update', ruledOut: false, key: 'update_overlaps', slots: { update: upd.title } });
   else out.push({ cause: 'google_update', ruledOut: true, key: 'update_no_overlap', slots: {} });
 
-  if (ctx.windows.seasonal && s.yoy !== null) {
+  // The season is a demand explanation: it only applies when searches (impressions) moved at least 5%.
+  if (ctx.windows.seasonal && s.yoy !== null && Math.abs(imprPct) >= 0.05) {
     const same = Math.sign(s.yoy) === Math.sign(imprPct) && Math.abs(s.yoy) >= 0.5 * Math.abs(imprPct) && Math.abs(imprPct) > 0;
     out.push(same
       ? { cause: 'seasonal', ruledOut: false, key: 'seasonal_same_last_year', slots: { yoy: s.yoy } }
@@ -415,6 +436,7 @@ function verdictTemplate(
     if (s.impressions) {
       slots.impr_pct = s.impressions.tau;
       slots.impr_real = s.impressions.real;
+      if (s.impressions.reason) slots.impr_reason = s.impressions.reason;
     }
     return { template: 'not_enough_data', slots };
   }
@@ -430,20 +452,27 @@ function evidenceFor(s: ScopeFacts, ctx: SynthesisContext, B: number | null): Ev
     confidence: 'EXTRACTED',
     partition: ctx.gscPartition,
     key: { from: ctx.windows.baseline[0], to: ctx.dataThrough },
-    summary: `Search Console: ${round(d.baseClicks)} -> ${round(d.curClicks)} clicks, ${round(s.baseImpressions)} -> ${round(s.curImpressions)} impressions${pos}`,
+    summary: `Search Console: ${int(d.baseClicks)} -> ${int(d.curClicks)} clicks, ${int(s.baseImpressions)} -> ${int(s.curImpressions)} impressions${pos}`,
   }];
   if (d.ci95?.total && B) {
     ev.push({
       type: 'statistic',
       confidence: 'INFERRED',
       partition: ctx.gscPartition,
-      summary: `Click waterfall over ${d.units} units, ${B} bootstrap replicates: ${round(d.ci95.total[0])} to ${round(d.ci95.total[1])} clicks`,
+      summary: `Click waterfall over ${int(d.units)} units, ${int(B)} bootstrap replicates: ${signedInt(d.ci95.total[0])} to ${signedInt(d.ci95.total[1])} clicks`,
     });
   }
   return ev;
 }
 
-const round = (x: number): number => Math.round(x);
+/** A signed whole number ("+71", "-77"), for ranges in evidence lines. */
+const signedInt = (x: number): string => (Math.round(x) > 0 ? `+${int(x)}` : int(x));
+
+/** A whole number with thousands separators (6.3), for evidence lines. */
+const int = (x: number): string => {
+  const r = Math.round(x);
+  return `${r < 0 ? '-' : ''}${String(Math.abs(r)).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`;
+};
 
 function relatedFor(s: ScopeFacts, ctx: SynthesisContext, cause: CauseResult, cpFindingIds: Map<string, string>): Finding['related'] {
   const span = analysisSpan(ctx);

@@ -4,13 +4,14 @@
 // else. Every value from data (queries, URLs, titles, notes, domains, sentences) goes through
 // esc(); the only links are https "Check it yourself" links, which open with noopener noreferrer.
 import { diffDays, ptDate } from '../core/time.js';
-import type { AnalysisOutput, Finding, PhaseResult, ReportContext, SiteChange, UpdateRow, Verdict } from '../core/types.js';
+import type { AnalysisOutput, Finding, PhaseResult, ReportContext, SiteChange, UpdateRow, Verdict, VerdictReason } from '../core/types.js';
 import {
-  BADGE, CAUSE_LABEL, REAL_LABEL, REMAINDER_LABEL, answerSentences, displayGroups, findingAlternatives, findingFalsifier,
+  BADGE, CAUSE_LABEL, REAL_LABEL, REMAINDER_NOTE, answerSentences, displayGroups, findingAlternatives, findingFalsifier,
   findingSentence, headlineFinding, renderSentence,
 } from './copy.js';
+import { FIELD_TEXT } from '../analyze/site-change.js';
 import { esc, externalLink } from './escape.js';
-import { fmtAbsPct, fmtDate, fmtInt, fmtMoney, fmtPct, fmtSignedInt } from './format.js';
+import { capitalise, eventName, fmtAbsPct, fmtDate, fmtInt, fmtMoney, fmtPct, fmtSignedInt } from './format.js';
 import { gscLink } from './gsc-links.js';
 import { renderFindingsJson } from './json.js';
 import { renderMarkdown } from './markdown.js';
@@ -66,12 +67,23 @@ function pill(real: Verdict): string {
 }
 
 function rangePct(ci: [number, number] | null | undefined): string {
-  return ci ? `${fmtPct(ci[0])} to ${fmtPct(ci[1])}` : 'n/a';
+  return ci ? `${fmtPct(ci[0])} to ${fmtPct(ci[1])}` : 'no range yet';
 }
 
 function rangeInt(ci: [number, number] | null | undefined): string {
-  return ci ? `${fmtSignedInt(ci[0])} to ${fmtSignedInt(ci[1])}` : 'n/a';
+  return ci ? `${fmtSignedInt(ci[0])} to ${fmtSignedInt(ci[1])}` : 'no range yet';
 }
+
+/** Which verdict rule (5.8) decided the label, in words. */
+const REASON_WORDS: Record<VerdictReason, string> = {
+  floors: 'below the minimum amount of data',
+  identification: 'a check for other explanations failed',
+  signal: 'the range excludes zero, the change is big enough to matter and it passes false-discovery control',
+  noise_bounded: 'the whole range sits inside the smallest change worth acting on',
+  noise_small: 'real, but smaller than the smallest change worth acting on',
+  wide_ci: 'the range is too wide to say',
+  fact: 'a measured fact, not an estimate',
+};
 
 function num(x: number | null | undefined, digits = 3): string {
   if (x === null || x === undefined || !Number.isFinite(x)) return 'n/a';
@@ -94,15 +106,18 @@ function checkLink(f: Finding, property: string): string {
 export function mathsDetails(f: Finding, out?: AnalysisOutput): string {
   const rows: [string, string][] = [];
   const e = f.effect;
-  if (e.estimate !== null) rows.push(['Estimate', `${fmtPct(e.estimate)} (95% range ${rangePct(e.ci95)})`]);
-  if (e.absolute !== null) rows.push(['Clicks', `${fmtSignedInt(e.absolute)} (95% range ${rangeInt(e.absoluteCi95)})`]);
-  if (e.p !== null || e.q !== null) rows.push(['p and q', `p = ${num(e.p)}, q = ${num(e.q)} (false-discovery control)`]);
+  if (e.estimate !== null) rows.push(['Estimate', e.ci95 ? `${fmtPct(e.estimate)} (95% range ${rangePct(e.ci95)})` : `${fmtPct(e.estimate)} (no range: too little data)`]);
+  if (e.absolute !== null) rows.push(['Clicks', e.absoluteCi95 ? `${fmtSignedInt(e.absolute)} (95% range ${rangeInt(e.absoluteCi95)})` : fmtSignedInt(e.absolute)]);
+  if (e.p !== null && e.q !== null) rows.push(['p and q', `p = ${num(e.p)}, q = ${num(e.q)} (false-discovery control)`]);
+  else if (e.p !== null) rows.push(['p', `${num(e.p)} (not tested for false discoveries: below the minimum data, or a single test)`]);
+  else if (e.q !== null) rows.push(['q', `${num(e.q)} (false-discovery control)`]);
   if (f.power) {
-    rows.push(['Smallest change we could detect', f.power.notMeasurable ? 'not measurable at this traffic level' : fmtAbsPct(f.power.mde)]);
-    rows.push(['Weeks of data needed', f.power.weeksNeeded === null ? 'n/a' : fmtInt(f.power.weeksNeeded)]);
+    const mdeOk = Number.isFinite(f.power.mde) && f.power.mde < 0.95;
+    rows.push(['Smallest change we could detect', mdeOk ? fmtAbsPct(f.power.mde) : 'not measurable at this traffic level']);
+    rows.push(['Weeks of data needed', f.power.weeksNeeded !== null ? fmtInt(f.power.weeksNeeded) : f.power.notMeasurable ? 'more than a year' : 'not worked out']);
     rows.push(['Clicks per week', fmtInt(f.power.perWeek)]);
   }
-  rows.push(['Verdict rule', `${f.real} (${f.reason})`]);
+  rows.push(['Verdict rule', f.reason === 'fact' ? 'A measured fact, not an estimate' : `${REAL_LABEL[f.real]}: ${REASON_WORDS[f.reason] ?? f.reason}`]);
   const impact = out?.siteChangeImpacts.find((i) => i.findingId === f.id);
   if (impact) {
     rows.push(['Pages compared', `${impact.treated} changed, ${impact.controls} unchanged${impact.controlFallback ? ' (fallback controls)' : ''}`]);
@@ -116,11 +131,11 @@ export function mathsDetails(f: Finding, out?: AnalysisOutput): string {
     rows.push(['Comparable share', fmtAbsPct(est.coverage)]);
     if (est.placebo) rows.push(['Placebo check', `${fmtPct(est.placebo.tau)} (95% range ${rangePct(est.placebo.ci95)})`]);
   }
-  const B = out ? Object.entries(out.diagnostics.bootstrapB).map(([k, v]) => `${k} ${v}`).join(', ') : '';
+  const B = out ? Object.entries(out.diagnostics.bootstrapB).map(([k, v]) => `${k} ${fmtInt(v)}`).join(', ') : '';
   if (B && (f.kind === 'waterfall' || f.kind === 'headline' || impact || est)) rows.push(['Bootstrap replicates (B)', B]);
   if (f.cause) rows.push(['Cause', `${CAUSE_LABEL[f.cause]} (${BADGE[f.causeConfidence]})`]);
   if (f.components) {
-    const groups = displayGroups(f.components, f.componentCi95 as Record<string, [number, number]> | null)
+    const groups = displayGroups(f.components, f.componentCi95)
       .filter((g) => g.value !== 0 || g.ci)
       .map((g) => `${g.label} ${fmtSignedInt(g.value)}${g.ci ? ` (${rangeInt(g.ci)})` : ''}`);
     if (groups.length) rows.push(['Parts', groups.join('; ')]);
@@ -133,10 +148,21 @@ export function mathsDetails(f: Finding, out?: AnalysisOutput): string {
   return `<details><summary>Show the maths</summary><dl class="maths">${dl}</dl><p class="muted">${esc(findingFalsifier(f))}</p></details>`;
 }
 
+/**
+ * The "Why?" part of a list item, "Why: Google update (Estimated)", shown only when there is a
+ * cause to name. A bare badge next to the label ("Real change Possible") reads as a contradiction:
+ * the badge rates the cause, not whether the change is real.
+ */
+export function whyText(f: Finding): string | null {
+  if (!f.cause || f.cause === 'unknown') return null;
+  return `Why: ${CAUSE_LABEL[f.cause]} (${BADGE[f.causeConfidence]})`;
+}
+
 function findingItem(f: Finding, property: string, out?: AnalysisOutput): string {
+  const why = whyText(f);
   const label = f.reason === 'fact'
     ? `<span class="pill">${esc(BADGE.EXTRACTED)}</span>`
-    : `${pill(f.real)} <span class="badge">${esc(BADGE[f.causeConfidence])}</span>`;
+    : `${pill(f.real)}${why ? ` <span class="badge">${esc(why)}</span>` : ''}`;
   return `<li>${label} <strong>${esc(f.unit.label)}</strong>` +
     `<br>${esc(findingSentence(f))}${checkLink(f, property)}${mathsDetails(f, out)}</li>`;
 }
@@ -222,10 +248,38 @@ export function weeklyClicks(out: AnalysisOutput, weeks = 16): number[] {
   return out2;
 }
 
-export function scorecardCells(row: UpdateRow, out: AnalysisOutput): { dates: string; clicks: string; impressions: string; verdict: string; notes: string } {
+/**
+ * Scorecard rows to show, newest first. Updates from before the Search Console history starts
+ * can't be measured, so they are counted in one line (`older`) instead of filling the table.
+ */
+export function scorecardRows(out: AnalysisOutput): { shown: UpdateRow[]; older: number } {
+  const sorted = [...out.scorecard].sort((a, b) => (a.begin < b.begin ? 1 : a.begin > b.begin ? -1 : a.eventId < b.eventId ? -1 : 1));
+  const shown = sorted.filter((r) => r.status !== 'before_history');
+  return { shown, older: sorted.length - shown.length };
+}
+
+/** The line under the scorecard for updates before the history starts, or null. */
+export function olderUpdatesLine(older: number): string | null {
+  if (older <= 0) return null;
+  return `${fmtInt(older)} older Google ${older === 1 ? 'update' : 'updates'} happened before your Search Console history starts, so ${older === 1 ? "it can't" : "they can't"} be measured (listed in findings.json).`;
+}
+
+/**
+ * A scorecard row's name. Status-page titles for outages ("Serving was experiencing an issue") and
+ * curated reporting changes don't say what they are, so they get a short prefix.
+ */
+export function updateName(row: Pick<UpdateRow, 'title' | 'kind'>): string {
+  const name = eventName(row.title);
+  if (row.kind === 'outage' && !/outage/i.test(name)) return `Google outage: ${name}`;
+  if (row.kind === 'data_anomaly' && !/reporting/i.test(name)) return `Reporting change: ${name}`;
+  return name;
+}
+
+export function scorecardCells(row: UpdateRow, out: AnalysisOutput): { name: string; dates: string; clicks: string; impressions: string; verdict: string; notes: string } {
   const f = out.findings.find((x) => x.id === row.findingId);
-  const dates = `${row.begin} to ${row.end ?? 'ongoing'}${row.endEstimated ? ' (end estimated)' : ''}`;
-  const eff = (e: UpdateRow['clicks']): string => (e ? `${fmtPct(e.tau)} (${rangePct(e.ci95)})` : 'n/a');
+  const dates = `${row.end === row.begin ? row.begin : `${row.begin} to ${row.end ?? 'ongoing'}`}${row.endEstimated ? ' (end estimated)' : ''}`;
+  const unmeasured = row.status === 'too_recent' ? 'not yet' : 'not measured';
+  const eff = (e: UpdateRow['clicks']): string => (e ? `${fmtPct(e.tau)} (${rangePct(e.ci95)})` : unmeasured);
   let verdict: string;
   if (row.status === 'too_recent') verdict = 'Too recent to judge';
   else if (row.status === 'before_history') verdict = 'Before your history';
@@ -233,14 +287,14 @@ export function scorecardCells(row: UpdateRow, out: AnalysisOutput): { dates: st
   else verdict = REAL_LABEL[f?.real ?? row.clicks?.real ?? 'underpowered'];
   const notes: string[] = [];
   if (row.competing.length) {
-    const titles = row.competing.map((id) => out.scorecard.find((r) => r.eventId === id)?.title ?? id);
+    const titles = row.competing.map((id) => eventName(out.scorecard.find((r) => r.eventId === id)?.title ?? id));
     notes.push(`Overlaps ${titles.join(', ')}`);
   }
   if (row.status === 'partial' && row.window) notes.push('Partial window, still settling');
   if (row.checkAgainOn) notes.push(`Check again on ${fmtDate(row.checkAgainOn)}`);
   if (row.measurementOverlap) notes.push('A reporting change overlaps, so impressions are not comparable');
   if (row.siteChangesSeen > 0) notes.push(`${fmtInt(row.siteChangesSeen)} site change${row.siteChangesSeen === 1 ? '' : 's'} seen by Google around then`);
-  return { dates, clicks: eff(row.clicks), impressions: eff(row.impressions), verdict, notes: notes.join('. ') };
+  return { name: updateName(row), dates, clicks: eff(row.clicks), impressions: eff(row.impressions), verdict, notes: notes.join('. ') };
 }
 
 export function siteChangeCells(c: SiteChange, out: AnalysisOutput): { what: string; pages: string; deployed: string; seen: string; outcome: string } {
@@ -259,9 +313,28 @@ export function siteChangeCells(c: SiteChange, out: AnalysisOutput): { what: str
   const outcome = impact
     ? `${REAL_LABEL[impact.real]}${impact.tau !== null ? `, ${fmtPct(impact.tau)} (${rangePct(impact.ci95)})` : ''}`
     : 'Not measured yet';
-  const what = c.source === 'annotation' ? `Your note: ${c.text ?? ''}` : `${c.field} changed (${c.cls}) on ${c.templateKey}`;
+  const field = FIELD_TEXT[c.field] ?? c.field;
+  const what = c.source === 'annotation' ? `Your note: ${c.text ?? ''}` : `${capitalise(field)} changed on ${c.templateKey} (${CLASS_TEXT[c.cls] ?? c.cls})`;
   return { what, pages: fmtInt(c.touched.length), deployed: `${day(c.deployed.from)} to ${day(c.deployed.to)}`, seen: seenText, outcome };
 }
+
+/** The before_recording line, dated when the site's changes have been recorded since some day. */
+export function beforeRecordingSentence(out: AnalysisOutput): string {
+  const snapshots = out.siteChanges.filter((c) => c.source === 'snapshot').map((c) => c.deployed.from).sort();
+  if (!snapshots.length) return renderSentence('before_recording', {});
+  try {
+    return renderSentence('before_recording', { since: ptDate(snapshots[0]) });
+  } catch {
+    return renderSentence('before_recording', {});
+  }
+}
+
+/** Phase notes as one line: each note ends with a full stop. */
+export function joinNotes(notes: string[]): string {
+  return notes.filter(Boolean).map((n) => (/[.!?)]$/.test(n) ? n : `${n}.`)).join(' ');
+}
+
+const CLASS_TEXT: Record<SiteChange['cls'], string> = { snippet: 'how it shows in Google', content: 'page content', technical: 'technical' };
 
 export interface LadderRow { when: string; what: string; status: string }
 
@@ -351,11 +424,11 @@ export function renderHtml(out: AnalysisOutput, ctx: ReportContext): string {
   const site = out.scopes.find((x) => x.unit.level === 'site');
   if (site) {
     s.push(waterfallSvg(site));
-    const rows = displayGroups(site.bars, site.ci95 as Record<string, [number, number]> | null);
+    const rows = displayGroups(site.bars, site.ci95);
     s.push('<table><thead><tr><th>Part</th><th class="num">Clicks</th><th class="num">95% range</th></tr></thead><tbody>');
     for (const r of rows) s.push(`<tr><td>${esc(r.label)}</td><td class="num">${esc(fmtSignedInt(r.value))}</td><td class="num">${esc(rangeInt(r.ci))}</td></tr>`);
     s.push(`<tr><td><strong>Total</strong></td><td class="num"><strong>${esc(fmtSignedInt(site.deltaClicks))}</strong></td><td class="num">${esc(rangeInt(site.ci95?.total))}</td></tr>`);
-    s.push(`</tbody></table><p class="muted">${esc(REMAINDER_LABEL)}: counted in the parts above.</p>`);
+    s.push(`</tbody></table><p class="muted">${esc(REMAINDER_NOTE)}</p>`);
   } else {
     s.push('<p class="muted">No click breakdown yet.</p>');
   }
@@ -372,17 +445,19 @@ export function renderHtml(out: AnalysisOutput, ctx: ReportContext): string {
 
   // 4. Google update scorecard
   s.push('<section id="updates"><h2>Google update scorecard</h2>');
-  const rows = [...out.scorecard].sort((a, b) => (a.begin < b.begin ? 1 : a.begin > b.begin ? -1 : 0));
+  const { shown: rows, older } = scorecardRows(out);
   if (rows.length) {
     s.push('<table><thead><tr><th>Update</th><th>Dates</th><th>Clicks change (range)</th><th>Impressions change (range)</th><th>Verdict</th><th>Notes</th></tr></thead><tbody>');
     s.push(capRows(rows, (r) => {
       const c = scorecardCells(r, out);
-      return `<tr><td>${esc(r.title)}</td><td>${esc(c.dates)}</td><td>${esc(c.clicks)}</td><td>${esc(c.impressions)}</td><td>${esc(c.verdict)}</td><td>${esc(c.notes)}</td></tr>`;
+      return `<tr><td>${esc(c.name)}</td><td>${esc(c.dates)}</td><td>${esc(c.clicks)}</td><td>${esc(c.impressions)}</td><td>${esc(c.verdict)}</td><td>${esc(c.notes)}</td></tr>`;
     }, 6, 'updates'));
     s.push('</tbody></table>');
   } else {
     s.push('<p class="muted">No Google updates overlap your data yet.</p>');
   }
+  const olderLine = olderUpdatesLine(older);
+  if (olderLine) s.push(`<p class="muted">${esc(olderLine)}</p>`);
   s.push('</section>');
 
   // 5. Pages and sections that moved
@@ -403,8 +478,8 @@ export function renderHtml(out: AnalysisOutput, ctx: ReportContext): string {
   if (facts.length) {
     s.push('<h3>AI Overview checks</h3><table><thead><tr><th>Search</th><th>Device</th><th>AI Overview shown</th><th>Cites you?</th><th>Top cited sites</th><th>Title rewritten?</th></tr></thead><tbody>');
     s.push(capRows(facts, (x) => `<tr><td>${esc(x.keyword)}</td><td>${esc(x.device)}</td><td>${esc(`${x.aioChecks} of ${x.checks}`)}</td>` +
-      `<td>${x.aioChecks > 0 ? (x.cited ? 'Yes' : 'No') : 'n/a'}</td><td>${esc(x.topDomains.slice(0, 3).join(', '))}</td>` +
-      `<td>${x.titleRewritten === null ? 'n/a' : x.titleRewritten ? 'Yes' : 'No'}</td></tr>`, 6, 'searches'));
+      `<td>${x.aioChecks > 0 ? (x.cited ? 'Yes' : 'No') : 'No AI Overview'}</td><td>${esc(x.topDomains.slice(0, 3).join(', ') || 'none')}</td>` +
+      `<td>${x.titleRewritten === null ? "Can't tell" : x.titleRewritten ? 'Yes' : 'No'}</td></tr>`, 6, 'searches'));
     s.push('</tbody></table>');
   }
   s.push('</section>');
@@ -422,7 +497,7 @@ export function renderHtml(out: AnalysisOutput, ctx: ReportContext): string {
   } else {
     s.push(`<p>${esc(renderSentence('no_site_changes', {}))}</p>`);
   }
-  if (sel.beforeRecording) s.push(`<p>${esc(renderSentence('before_recording', {}))}</p>`);
+  if (sel.beforeRecording) s.push(`<p>${esc(beforeRecordingSentence(out))}</p>`);
   s.push('</section>');
 
   // 8. What we checked and what we couldn't
@@ -440,7 +515,7 @@ export function renderHtml(out: AnalysisOutput, ctx: ReportContext): string {
   }
   if (!anyRest) s.push('<p class="muted">Everything we found is shown above.</p>');
   const d = out.diagnostics;
-  const B = Object.entries(d.bootstrapB).map(([k, v]) => `${k} ${v}`).join(', ') || 'n/a';
+  const B = Object.entries(d.bootstrapB).map(([k, v]) => `${k} ${fmtInt(v)}`).join(', ') || 'none';
   s.push('<details><summary>Show the maths for the whole report</summary><dl class="maths">' +
     `<dt>Click-rate curve strength (m)</dt><dd>${esc(fmtInt(out.curve.m))}</dd>` +
     `<dt>Curve fitted on</dt><dd>${esc(`${out.curve.fitWindow[0]} to ${out.curve.fitWindow[1]}`)}</dd>` +
@@ -468,7 +543,7 @@ export function renderHtml(out: AnalysisOutput, ctx: ReportContext): string {
     for (const ph of run.phases) {
       const req = Object.values(ph.requests).reduce((a, b) => a + b, 0);
       s.push(`<tr><td>${esc(phaseLabel(ph.name))}</td><td>${esc(statusWord(ph.status))}</td><td class="num">${esc(fmtInt(req))}</td>` +
-        `<td class="num">${esc(fmtInt(ph.rows))}</td><td class="num">${esc(fmtMoney(ph.costUsd))}</td><td>${esc(ph.notes.join(' '))}</td></tr>`);
+        `<td class="num">${esc(fmtInt(ph.rows))}</td><td class="num">${esc(fmtMoney(ph.costUsd))}</td><td>${esc(joinNotes(ph.notes))}</td></tr>`);
     }
     s.push(`</tbody></table><p>Cost this run: ${esc(fmtMoney(run.spendUsd))}.</p>`);
   } else {

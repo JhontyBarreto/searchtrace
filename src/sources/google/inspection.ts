@@ -57,6 +57,8 @@ export interface InspectLedgerRecord {
 
 const iso = (ms: number): string => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+/** Inspections in flight at once (see execute). */
+export const INSPECT_CONCURRENCY = 8;
 const fmtInt = (n: number): string => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
 function safeNormalize(u: unknown): string | null {
@@ -224,7 +226,9 @@ async function plan(ctx: RunContext): Promise<CollectorPlan<InspectionPlan>> {
       {
         group: 'free',
         label: 'Index checks',
-        detail: `${fmtInt(queue.length)} pages, ${fmtInt(used + queue.length)} of your ${fmtInt(PROPERTY_DAILY_QUOTA)} daily checks`,
+        detail: queue.length === 0 && !through
+          ? `pages are picked once Search Console data is in, up to ${fmtInt(budget)} checks today`
+          : `${fmtInt(queue.length)} page${queue.length === 1 ? '' : 's'}, ${fmtInt(used + queue.length)} of your ${fmtInt(PROPERTY_DAILY_QUOTA)} daily checks`,
       },
     ],
     estRequests: queue.length,
@@ -325,7 +329,10 @@ async function execute(p: CollectorPlan<InspectionPlan>, ctx: RunContext): Promi
   const used = await usedOn(ctx.store, ptDay);
   const budget = Math.min(p.payload.budget, dailyCap(ctx.config) - used);
   const queue = p.payload.queue.slice(0, Math.max(0, budget));
-  const limiter = createLimiter({ rps: 4, concurrency: 2 });
+  // 4 req/s as 4.3 says. Google takes about 4 to 10 s to answer each inspection (measured on a
+  // real property: a median of 8 s), so with only 2 in flight 200 checks took 13 minutes. Eight in
+  // flight keeps the same 4 req/s ceiling, well inside the 600 per minute quota.
+  const limiter = createLimiter({ rps: 4, concurrency: INSPECT_CONCURRENCY });
   const records: InspectionRecord[] = [];
   let calls = 0;
   let failures = 0;
@@ -337,17 +344,25 @@ async function execute(p: CollectorPlan<InspectionPlan>, ctx: RunContext): Promi
     if (quotaHit || fatal || ctx.signal.aborted || consecutive >= MAX_CONSECUTIVE_FAILURES) return;
     let res: { status: number; data: unknown };
     try {
-      const headers = await google.headers(ctx.signal);
-      requests['inspect.call']++;
-      res = await requestJson<unknown>(ctx.fetch, {
-        url: INSPECT_ENDPOINT,
-        method: 'POST',
-        headers,
-        body: { inspectionUrl: item.url, siteUrl: property, languageCode: 'en-US' },
-        idempotent: true,
-        retry: { attempts: 4, baseMs: 1000, capMs: 64_000, on: [500, 502, 503, 504] },
-        signal: ctx.signal,
-      });
+      const call = async (): Promise<{ status: number; data: unknown }> => {
+        const headers = await google.headers(ctx.signal);
+        requests['inspect.call']++;
+        return requestJson<unknown>(ctx.fetch, {
+          url: INSPECT_ENDPOINT,
+          method: 'POST',
+          headers,
+          body: { inspectionUrl: item.url, siteUrl: property, languageCode: 'en-US' },
+          idempotent: true,
+          retry: { attempts: 4, baseMs: 1000, capMs: 64_000, on: [500, 502, 503, 504] },
+          signal: ctx.signal,
+        });
+      };
+      res = await call();
+      // 4.7: a 401 means the access token went stale; drop it, refresh once, and try again.
+      if (res.status === 401 && google.invalidate) {
+        google.invalidate();
+        res = await call();
+      }
     } catch (e) {
       if (ctx.signal.aborted) return;
       if (e instanceof StError && (e.code === 'auth' || e.code === 'reauth_required' || e.code === 'permission')) {

@@ -1,0 +1,33 @@
+how to stop a dripping tap · last 28 days vs the 28 before
+
+  Real change · Why: AI Overview · Estimated
+  People clicked less even though you ranked in the same place. On searches where Google now shows
+  an AI Overview that doesn't cite you, your click rate fell 29% more than on similar searches
+  without one (likely range 24% to 34%). This is an estimate: Google doesn't report clicks lost to
+  AI Overviews.
+
+  Where the clicks went (estimated, 95% range)
+    Fewer or more searches              -5    (-6 to -4)
+    Ranking                             +0    (+0 to +0)
+    Same spot, different click rate    -73    (-118 to -31)
+    AI Overview citation                +0    (+0 to +0)
+    Appeared or disappeared             +0    (+0 to +0)
+
+  Evidence
+    Measured   Search Console: 216 -> 138 clicks, 4,024 -> 3,899 impressions, position 4.0 -> 4.0   gsc/2026/10/2026-10-03.ndjson.gz
+    Estimated  Click waterfall over 2 units, 1,000 bootstrap replicates: -123 to -36 clicks   gsc/2026/10/2026-10-03.ndjson.gz
+
+  Other explanations
+    Fewer searches: ruled out, impressions held (-3.1%).
+    Ranking: ruled out, average position held (4.0 to 4.0).
+    Your change: can't rule it out, nothing was recorded on your site then.
+    Google update: possible, it overlaps the September 2026 spam update.
+
+  What would prove this wrong: if the AI Overview goes away and your click rate stays low, it wasn't
+  the AI Overview.
+  Check it yourself: https://search.google.com/search-console/performance/search-analytics?resource_id=sc-domain%3Apipewell-plumbing.example&start_date=20260809&end_date=20261003&query=!how%20to%20stop%20a%20dripping%20tap
+
+Also about this search
+  Measured  how to stop a dripping tap
+    "how to stop a dripping tap" (desktop): an AI Overview showed in 6 of 6 checks, and it doesn't
+    cite you; it cites diy-advice.example, heatingguide.example, plumbinghelp.example.

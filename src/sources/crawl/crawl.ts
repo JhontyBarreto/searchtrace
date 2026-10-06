@@ -26,9 +26,11 @@ import { defaultOrigins, isOnProperty, normalizeUrl, pathOf } from '../../core/u
 import { createLimiter } from '../../http/limiter.js';
 import { layout } from '../../store/layout.js';
 import { extractFields, fieldsHashOf } from './extract.js';
-import { USER_AGENT, fetchPage, guardedGet, gunzipBodies, loadRobots, urlAllowed, type PageFetch, type RobotsResult } from './fetcher.js';
+import { USER_AGENT, fetchPage, guardedGet, loadRobots, urlAllowed, type PageFetch, type RobotsResult } from './fetcher.js';
 import { isAllowed } from './robots.js';
 import { parseSitemapXml } from './sitemap.js';
+
+const groupDigits = (n: number): string => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
 export const ETAG_CACHE = `${layout.cacheDir}/etags.json`;
 const GSC_LOOKBACK_DAYS = 90;
@@ -161,7 +163,8 @@ async function plan(ctx: RunContext): Promise<CollectorPlan<CrawlPlan>> {
   if (last?.fetchedAt) {
     const hours = (ctx.clock.now().getTime() - Date.parse(last.fetchedAt)) / 3_600_000;
     if (hours >= 0 && hours < c.minHoursBetween) {
-      return skipPlan(origin, `Pages were saved ${Math.max(1, Math.round(hours))} hours ago; they are saved at most once every ${c.minHoursBetween} hours.`);
+      const h = Math.max(1, Math.round(hours));
+      return skipPlan(origin, `Pages were saved ${h} hour${h === 1 ? '' : 's'} ago; they are saved at most once every ${c.minHoursBetween} hours.`);
     }
   }
   const home = safeNormalize(origin);
@@ -170,9 +173,15 @@ async function plan(ctx: RunContext): Promise<CollectorPlan<CrawlPlan>> {
     ctx.index.snapshots({ since: iso(new Date(ctx.clock.now().getTime() - 7 * 86_400_000)) }).map((s) => s.url),
   );
   const est = Math.min(c.maxUrls, Math.max(urls.length, recent.size, 1));
-  const minutes = Math.max(1, Math.ceil((est * Math.max(c.delayMs, 1)) / 60_000));
+  // Before the first run nothing is known but the homepage: the sitemap is only read when the crawl starts.
+  const firstRun = urls.length <= 1 && recent.size === 0;
+  // Pages are spaced delayMs apart on one host, so concurrency doesn't shorten this much.
+  const minutes = Math.max(1, Math.ceil(((firstRun ? c.maxUrls : est) * Math.max(c.delayMs, 1)) / 60_000));
+  const count = firstRun
+    ? `up to ${groupDigits(c.maxUrls)} pages (your sitemap is read when the run starts)`
+    : `${groupDigits(est)} page${est === 1 ? '' : 's'}`;
   return {
-    lines: [{ group: 'free', label: 'Your pages', detail: `${est} pages, ${c.concurrency} at a time, about ${minutes} minute${minutes === 1 ? '' : 's'}` }],
+    lines: [{ group: 'free', label: 'Your pages', detail: `${count}, ${c.concurrency} at a time, ${firstRun ? 'up to' : 'about'} ${minutes} minute${minutes === 1 ? '' : 's'}` }],
     estRequests: est + 3,
     estUsd: 0,
     payload: { origin, urls, keyframe: await isKeyframe(ctx) },
@@ -259,7 +268,7 @@ async function crawl(
     }) as typeof inner;
   const pageFetch = counted('crawl.page');
   const robotsFetch = counted('crawl.robots');
-  const sitemapFetch = gunzipBodies(counted('crawl.sitemap'));
+  const sitemapFetch = counted('crawl.sitemap');
   const pacer = createPacer(c.delayMs, signal);
   const notes: string[] = [];
 
@@ -521,6 +530,7 @@ async function collectSitemaps(
         headers: { accept: 'application/xml,text/xml;q=0.9,*/*;q=0.1' },
         signal: ctx.signal,
         beforeRequest: pace,
+        gunzip: true,
       });
       if (g.outcome !== 'ok' || g.status === null || g.status < 200 || g.status >= 300) continue;
       const parsed = parseSitemapXml(g.text);

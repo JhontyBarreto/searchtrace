@@ -14,7 +14,7 @@ import { addDays, diffDays, ptDate } from '../core/time.js';
 import { defaultOrigins, pathOf } from '../core/url.js';
 import type {
   AioOutput, AnalysisInput, AnalysisOutput, AnalysisUnit, Cell, ChangePoint, DayTotal, Device, Finding, GoogleEvent, IdCheck, IsoDate,
-  PeriodEffect, ScopeDecomposition, SerpCandidate, SerpObservation, Series, SiteChangeImpact, UpdateRow, Verdict,
+  PeriodEffect, ScopeDecomposition, SerpCandidate, SerpObservation, Series, SiteChangeImpact, UpdateRow, Verdict, VerdictReason,
 } from '../core/types.js';
 import { layout } from '../store/layout.js';
 import { analyzeAio } from './aio.js';
@@ -148,13 +148,26 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
   let hImpr = compare(impressions, phiImpr, 1000);
   // A reporting change touching either window caps the impressions comparison at unclear (5.1).
   if (touchesWindows && hImpr.floorsMet) hImpr = { ...hImpr, real: 'unclear', reason: 'identification', power: null };
+  // Period-to-period variance of impressions beyond counting noise, measured on the whole site's own
+  // history (empirical SE squared minus the quasi-Poisson part). Section, page and search impression
+  // comparisons add it to their own counting variance: impressions swing from month to month far
+  // more than Poisson counts do (on a real small site the empirical SE was 7 times the quasi-Poisson
+  // one), and a page is at least as jumpy as the whole site.
+  const imprExtraVar = hImpr.seSource === 'empirical' && hImpr.pre > 0 && hImpr.post > 0
+    ? Math.max(0, hImpr.se ** 2 - phiImpr * (1 / hImpr.pre + 1 / hImpr.post))
+    : 0;
 
   // ---- SERP tallies ----
   const serp = i.db.serp();
   const serpFit = tallySerp(serp, windows.fit);
   const serpCur = tallySerp(serp, windows.current);
   const serpBase = tallySerp(serp, windows.baseline);
-  const serpRecent = tallySerp(serp, [b0, D]);
+  // Checks taken after the last final day still describe today's results page (they always land
+  // 2 to 3 days after D, because Search Console lags), so they count as "checked" from b0 onwards.
+  const serpRecent = tallySerp(serp, [b0, '9999-12-31']);
+  // A search counts as checked when any device was checked (checks run on its main device only).
+  const checkedKeywords = new Set([...serpRecent.keys()].map((k) => k.slice(0, k.lastIndexOf('|'))));
+  const aioKeywords = new Set([...serpRecent.entries()].filter(([, t]) => t.aio > 0).map(([k]) => k.slice(0, k.lastIndexOf('|'))));
   const excludedPairs = new Set([...serpFit.keys(), ...serpCur.keys()].filter((k) => citedMostly(serpFit.get(k)) || citedMostly(serpCur.get(k))));
   const flattening = new Set([...serpCur.keys()].filter((k) => citedMostly(serpCur.get(k)) && !citedMostly(serpBase.get(k))));
   const uncitedAio = (k: string): boolean => {
@@ -355,7 +368,7 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
   if (serp.length > 0) {
     aio = optional('analyzeAio', skipped, () => analyzeAio({
       serp, cells: cellsAll.filter((c) => c.date >= windows.placebo.pre1[0]), curve, isBrand: brand.isBrand, windows, siteDomain: i.siteDomain,
-      pageTitles, samePosByQuery, rng: (key) => rng(`aio:${key}`), delta: DEFAULT_DELTA.aio, bootstrap: cfg.analysis.bootstrap.aio,
+      pageTitles, samePosByQuery, rng: (key) => rng(`aio:${key}`), delta: DEFAULT_DELTA.aio, bootstrap: cfg.analysis.bootstrap.aio, fdrQ,
     }), null);
   }
   const did = aio?.estimates.find((e) => e.estimator === 'did') ?? null;
@@ -363,7 +376,9 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
   // ---- Synthesis (5.12) ----
   const ctx: SynthesisContext = {
     dataThrough: D, windows, windowDays: L, events, changePoints: cpOut.changePoints, siteChanges: i.siteChanges, siteChangeImpacts,
-    impactFindingIds: new Map(siteChangeImpacts.map((x) => [x.siteChangeId, x.findingId])), aioDidSignal: did?.real === 'signal',
+    impactFindingIds: new Map(siteChangeImpacts.map((x) => [x.siteChangeId, x.findingId])),
+    impactSlots: new Map(siteChangeImpacts.map((x) => [x.siteChangeId, siteChangeFindings.find((f) => f.id === x.findingId)?.slots ?? {}])),
+    aioDidSignal: did?.real === 'signal',
     aioDid: did ? { tau: did.tau, ci95: did.ci95 } : null, firstSnapshot,
     gscPartition: layout.gscDay(D, i.db.revisions().find((r) => r.day === D)?.revision ?? 1),
     costPerCheck: cfg.serp.provider === 'dataforseo' ? cfg.serp.costPerCheckUsd : 0.0012,
@@ -413,12 +428,14 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
     const nIc = sumOf(nm, (u) => units[u].cur.I);
     const posB = nIb > 0 ? sumOf(nm, (u) => (units[u].base.pbar ?? 0) * units[u].base.I) / nIb : null;
     const posC = nIc > 0 ? sumOf(nm, (u) => (units[u].cur.pbar ?? 0) * units[u].cur.I) / nIc : null;
-    const negLoss = sumOf(mem, (u) => Math.max(0, -units[u].bars.samePos));
-    const share = (pred: (u: number) => boolean): number => (negLoss > 0 ? sumOf(nm.filter(pred), (u) => Math.max(0, -units[u].bars.samePos)) / negLoss : 0);
+    // Same-spot movement in the direction of the scope's change (a loss in a drop, a gain in a rise).
+    const sameWay = (u: number): number => Math.max(0, (d.deltaClicks < 0 ? -1 : 1) * units[u].bars.samePos);
+    const negLoss = sumOf(mem, sameWay);
+    const share = (pred: (u: number) => boolean): number => (negLoss > 0 ? sumOf(nm.filter(pred), sameWay) / negLoss : 0);
     const qKey = (u: number): string => `${units[u].key.query}|${units[u].key.device}`;
     const queries = [...new Set(nm.map((u) => units[u].key.query as string))];
-    const checkedQ = new Set(nm.filter((u) => serpRecent.has(qKey(u))).map((u) => units[u].key.query));
-    const aioQ = new Set(nm.filter((u) => (serpRecent.get(qKey(u))?.aio ?? 0) > 0).map((u) => units[u].key.query));
+    const checkedQ = new Set(nm.filter((u) => checkedKeywords.has(units[u].key.query as string)).map((u) => units[u].key.query));
+    const aioQ = new Set(nm.filter((u) => aioKeywords.has(units[u].key.query as string)).map((u) => units[u].key.query));
     const down = d.deltaClicks < 0;
     const moved = queries.filter((q) => {
       const qs = nm.filter((u) => units[u].key.query === q);
@@ -432,27 +449,35 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
     const curveMass = sumOf(mem, (u) => Math.abs(units[u].bars.rank) + Math.abs(units[u].bars.samePos));
     const unstableMass = sumOf(mem.filter((u) => units[u].flags.includes('curve_unstable')), (u) => Math.abs(units[u].bars.rank) + Math.abs(units[u].bars.samePos));
     const pages = new Set(mem.map((u) => units[u].key.page));
+    const pageDelta = new Map<string, number>();
+    for (const u of mem) pageDelta.set(units[u].key.page, (pageDelta.get(units[u].key.page) ?? 0) + units[u].cur.C - units[u].base.C);
+    const movedPages = new Set([...pageDelta].filter(([, dc]) => (d.deltaClicks < 0 ? dc < 0 : d.deltaClicks > 0 && dc > 0)).map(([p]) => p));
     const top = topSegmentOf(sp.unit.level, mem);
     const impTau = Ib > 0 ? Ic / Ib - 1 : 0;
     let imprVerdict: Verdict = 'underpowered';
+    let imprReason: VerdictReason = Ib >= 1000 ? 'wide_ci' : 'floors';
     if (Ib > 0 && Ic > 0) {
-      const se = Math.sqrt(phiImpr * (1 / Ib + 1 / Ic));
+      const se = Math.sqrt(phiImpr * (1 / Ib + 1 / Ic) + imprExtraVar);
       const lr = Math.log(Ic / Ib);
-      imprVerdict = decideVerdict({
+      const iv = decideVerdict({
         estimate: impTau, ci95: [Math.exp(lr - 1.96 * se) - 1, Math.exp(lr + 1.96 * se) - 1], floorsMet: Ib >= 1000, identification: [],
         q: 2 * normalCdf(-Math.abs(lr) / se), delta: deltaFor(sp.unit.level), fdrQ, weeksObserved: L / 7,
-      }).verdict;
+      });
+      imprVerdict = iv.verdict;
+      imprReason = iv.reason;
     }
     return {
-      unit: sp.unit, decomposition: d, groupCi: boots[k]?.groupCi ?? null, pages, baseImpressions: Ib, curImpressions: Ic, pb: posB, pc: posC,
+      unit: sp.unit, decomposition: d, groupCi: boots[k]?.groupCi ?? null, pages, movedPages, baseImpressions: Ib, curImpressions: Ic, pb: posB, pc: posC,
       ctrB: nIb > 0 ? sumOf(nm, (u) => units[u].base.C) / nIb : null, ctrC: nIc > 0 ? sumOf(nm, (u) => units[u].cur.C) / nIc : null,
-      movedSearches: moved, checkedShare: share((u) => serpRecent.has(qKey(u))), aioUncitedShare: share((u) => uncitedAio(qKey(u))),
+      movedSearches: moved, checkedShare: share((u) => checkedKeywords.has(units[u].key.query as string)), aioUncitedShare: share((u) => uncitedAio(qKey(u))),
       checkedQueries: checkedQ.size, aioQueries: aioQ.size,
       candidates: serpCandidates.filter((c) => (sp.unit.level === 'query' ? c.keyword === sp.unit.key : c.pages.some((p) => pages.has(p)))).length,
       kFallback: mem.some((u) => units[u].flags.includes('k_fallback')), unstableShare: curveMass > 0 ? unstableMass / curveMass : 0,
       topSegment: top, yoy: yoyOf(mem, sp.unit.level), p: d.pTotal, q: null,
-      floorsMet: sp.unit.level === 'query' ? sumOf(nm, (u) => units[u].Eb) >= 30 : d.baseClicks >= 30 || Ib >= 1000,
-      delta: deltaFor(sp.unit.level), phi: phiClicks, impressions: { tau: impTau, real: imprVerdict },
+      // The waterfall is a claim about clicks, so its floor is clicks (5.8): the 1,000-impression
+      // alternative is for impression claims only, which have their own verdict above.
+      floorsMet: sp.unit.level === 'query' ? sumOf(nm, (u) => units[u].Eb) >= 30 : d.baseClicks >= 30,
+      delta: deltaFor(sp.unit.level), phi: phiClicks, impressions: { tau: impTau, real: imprVerdict, reason: imprReason },
     };
   });
 
@@ -492,7 +517,10 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
     }
     const d = f.decomposition;
     const est = d.baseClicks > 0 ? d.deltaClicks / d.baseClicks : null;
-    const ci = est !== null && d.ci95?.total ? ([d.ci95.total[0] / d.baseClicks, d.ci95.total[1] / d.baseClicks] as [number, number]) : null;
+    // As a share of the baseline; clicks can't fall by more than all of them, so the range stops at -100%.
+    const ci = est !== null && d.ci95?.total
+      ? ([Math.max(-1, d.ci95.total[0] / d.baseClicks), Math.max(-1, d.ci95.total[1] / d.baseClicks)] as [number, number])
+      : null;
     const identification: IdCheck[] = cause.usesCurve && f.unstableShare >= 0.5 ? [{ name: 'curve_unstable', passed: false, detail: curve.unstable.join(',') }] : [];
     const r = decideVerdict({
       estimate: est ?? 0, ci95: ci, floorsMet: f.floorsMet, identification, q: f.q, delta: f.delta, fdrQ, weeksObserved: L / 7,
@@ -506,7 +534,7 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
     }));
   });
   // The headline's "impressions, which have far more data" sentence uses the headline impressions comparison.
-  const site: ScopeFacts = { ...facts[0], impressions: { tau: hImpr.tau, real: hImpr.real } };
+  const site: ScopeFacts = { ...facts[0], impressions: { tau: hImpr.tau, real: hImpr.real, reason: hImpr.reason } };
   const headline = headlineFinding(site, hClicks, hImpr, siteCause ?? causeForScope(site, ctx), ctx, { B, cpFindingIds, measurementCap: false });
 
   // ---- Notices ----
@@ -514,7 +542,10 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
   const provisional = range.provisionalThrough;
   const notices: Finding[] = [
     noticeFinding('coverage', { hidden: 1 - namedShare, shown: namedShare }, ctx),
-    noticeFinding('freshness', { date: D, n: provisional ? Math.max(1, diffDays(D, provisional)) : 3 }, ctx),
+    // No day count: it would come from the provisional tail in state/, which is not an input
+    // (D24), so findings.json would change when state/ is cleared. The run summary prints the
+    // live count instead.
+    noticeFinding('freshness', { date: D }, ctx),
   ];
   if (i.siteChanges.length === 0) notices.push(noticeFinding('no_site_changes', {}, ctx));
 
@@ -529,9 +560,18 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
   const seen = new Set<string>();
   const findings = sortFindings(all.filter((f) => (seen.has(f.id) ? false : (seen.add(f.id), true))).map((f) => ({ ...f, priority: findingPriority(f) })));
 
+  // "New" means first reported for this data day or later. The pipeline saves each run's findings
+  // with meta.day = dataThrough, so re-analysing the same data (why, run --offline, a second run the
+  // same day) finds those ids already in the history; counting them as old there would flip
+  // `boring` between identical runs. An AI Overview seen on a search is a record, not a change in
+  // traffic, so it never makes a run interesting on its own (index transitions still do).
   const history = i.db.findingsHistory();
   const cpSignalInCurrent = cpOut.findings.some((f) => f.real === 'signal' && f.date !== null && f.date >= c0 && f.date <= D);
-  const newSignal = findings.some((f) => f.real === 'signal' && f.kind !== 'headline' && !history.has(f.id));
+  const isNew = (id: string): boolean => {
+    const h = history.get(id);
+    return !h || h.firstReported >= D;
+  };
+  const newSignal = findings.some((f) => f.real === 'signal' && f.kind !== 'headline' && f.kind !== 'aio_fact' && isNew(f.id));
   const boring = hClicks.real === 'noise' && (hImpr.real === 'noise' || hImpr.real === 'underpowered') && !cpSignalInCurrent && !newSignal;
 
   const homepage = pickHomepage(units, i.property);

@@ -35,7 +35,7 @@ import { benjaminiHochberg, bootstrapP, percentileCi } from './stats.js';
 import { decideVerdict } from './verdicts.js';
 
 export const ANALYZER = { name: 'aio', version: '1' } as const;
-export const FDR_Q = 0.1; // AioInput carries no fdrQ; this is the config default (family 4 is AIO-only)
+export const FDR_Q = 0.1; // the config default, used when AioInput.fdrQ is not given (family 4 is AIO-only)
 export const FACT_FINDINGS_CAP = 200;
 export const FACTS_CAP = 1000;
 const MIN_PER_GROUP = 20;
@@ -356,7 +356,8 @@ function estimateFinding(
   return {
     id: findingId(['aio_effect', unitKey, `${W.baseline[0]}..${W.current[1]}`, estimator]),
     kind: 'aio_effect',
-    unit: { level: 'site', key: unitKey, label: 'Whole site' },
+    // Both estimators are about the whole site; the label tells the two apart in the report.
+    unit: { level: 'site', key: unitKey, label: estimator === 'did' ? 'AI Overviews, before and after' : 'AI Overviews, side by side' },
     metric: 'clicks',
     windows: { baseline: W.baseline, current: W.current },
     date: null,
@@ -501,7 +502,7 @@ export function analyzeAio(i: AioInput): AioOutput {
   const verdictFor = (est: Estimation, estimator: 'cross_section' | 'did', q: number | null): VerdictResult =>
     decideVerdict({
       estimate: est.tau ?? 0, ci95: est.ci95, floorsMet: est.floorsMet && est.tau !== null, identification: checksFor(est, estimator),
-      q, delta, fdrQ: FDR_Q, weeksObserved, counts: { pre: est.cf, post: est.obs, phi: 1 },
+      q, delta, fdrQ: i.fdrQ ?? FDR_Q, weeksObserved, counts: { pre: est.cf, post: est.obs, phi: 1 },
     });
   const vCs = verdictFor(cs, 'cross_section', qOf(0));
   const vDd = verdictFor(dd, 'did', qOf(1));

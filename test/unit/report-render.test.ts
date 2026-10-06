@@ -129,6 +129,21 @@ describe('findings.json (test 48, F part)', () => {
     expect(Array.isArray(doc.aio.facts)).toBe(true);
   });
 
+  it('writes a zero-traffic baseline as explicit nulls, never Infinity or NaN (valid JSON by design)', () => {
+    // periodCompare with a zero pre total: tau is Infinity, se Infinity, ci95 [-1, Infinity] (WP-A stats note).
+    const out = makeAnalysisOutput();
+    out.headline.clicks = { ...out.headline.clicks, pre: 0, post: 40, tau: Number.POSITIVE_INFINITY, se: Number.POSITIVE_INFINITY, ci95: [-1, Number.POSITIVE_INFINITY], p: Number.NaN };
+    out.findings[0] = { ...out.findings[0], effect: { ...out.findings[0].effect, estimate: Number.POSITIVE_INFINITY, ci95: [-1, Number.POSITIVE_INFINITY] } };
+    const { json, md, html } = renderReports(out, makeReportContext());
+    const doc = JSON.parse(json);
+    expect(doc.headline.clicks.tau).toBeNull();
+    expect(doc.headline.clicks.se).toBeNull();
+    expect(doc.headline.clicks.ci95).toEqual([-1, null]);
+    expect(doc.headline.clicks.p).toBeNull();
+    expect(json).not.toMatch(/Infinity|NaN/);
+    for (const text of [md, html]) expect(text).not.toMatch(/\b(NaN|Infinity|undefined)\b/);
+  });
+
   it('sorts keys and rounds to 4 decimals', () => {
     expect(stableStringify({ b: 1, a: { d: 0.123456, c: -0 } }, 0)).toBe('{"a":{"c":0,"d":0.1235},"b":1}\n');
     expect(canonicalString({ x: Number.POSITIVE_INFINITY, y: [1, undefined] })).toBe('{"x":null,"y":[1,null]}');
@@ -140,6 +155,6 @@ describe('Show the maths', () => {
     const out = makeAnalysisOutput();
     const { html } = renderReports(out, makeReportContext());
     expect(html).toContain('<dt>Pages compared</dt><dd>3 changed, 2 unchanged (fallback controls)</dd>');
-    expect(html).toContain('<dt>Bootstrap replicates (B)</dt><dd>waterfall 1000</dd>');
+    expect(html).toContain('<dt>Bootstrap replicates (B)</dt><dd>waterfall 1,000</dd>');
   });
 });

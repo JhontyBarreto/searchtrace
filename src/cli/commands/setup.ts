@@ -20,7 +20,7 @@ import { openStore } from '../../store/store.js';
 import { credentialSource } from './doctor.js';
 import { demoCommand } from './demo.js';
 import { runCommand } from './run.js';
-import { out, parseFlags, printError, requirePrompter, resolveDeps, resolveDir, type CliDeps, type Prompter } from '../prompt.js';
+import { displayPath, out, parseFlags, printError, requirePrompter, resolveDeps, resolveDir, type CliDeps, type Prompter } from '../prompt.js';
 
 // Built by concatenation so the repo lint rule about the console global never trips on a URL.
 const CLOUD = `https://${'console'}.cloud.google.com`;
@@ -158,9 +158,9 @@ async function confirmProperty(auth: GoogleAuth, wanted: { property: string; gue
 }
 
 function nextSteps(deps: CliDeps, dir: string, github: string | null): void {
-  const dirArg = dir === join(deps.cwd, 'searchtrace-data') ? '' : ` --dir ${relative(deps.cwd, dir) || '.'}`;
+  const dirArg = dir === join(deps.cwd, 'searchtrace-data') ? '' : ` --dir ${displayPath(deps.cwd, dir)}`;
   if (github) {
-    out(deps, `Wrote ${relative(deps.cwd, github) || github}.`);
+    out(deps, `Wrote ${displayPath(deps.cwd, github)}.`);
     out(deps, 'Next: make the repo private, add the secret SEARCHTRACE_GOOGLE_KEY (paste the key JSON), commit config.json and the workflow, then click "Run workflow". See docs/GITHUB-ACTION.md.');
   }
   out(deps, `Check everything with: npx searchtrace doctor${dirArg}`);

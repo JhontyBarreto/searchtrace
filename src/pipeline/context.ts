@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { loadConfig } from '../core/config.js';
 import { StError } from '../core/errors.js';
 import { newRunId } from '../core/ids.js';
+import { rngFor } from '../core/rng.js';
 import { createLogger } from '../core/log.js';
 import { createSecretRegistry } from '../core/secrets.js';
 import { systemClock } from '../core/time.js';
@@ -59,7 +60,9 @@ export async function createRunContext(o: PipelineInput): Promise<RunContext> {
   const index = await openIndex(resolveInside(store.root, layout.index));
   const fetchFn: Fetch = o.fetch ?? globalThis.fetch;
   return {
-    runId: newRunId(clock),
+    // The demo runs on a fixed clock; a seeded suffix makes its run id, and so every path it
+    // writes, the same on each run (byte-identical demo folders).
+    runId: o.demo ? newRunId(clock, rngFor('searchtrace-demo', 'run-id')) : newRunId(clock),
     startedAt: instantOf(clock.now()),
     toolVersion: o.toolVersion ?? toolVersion(),
     config,

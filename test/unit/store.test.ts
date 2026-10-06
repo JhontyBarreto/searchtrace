@@ -9,7 +9,7 @@ import type { DataStore, PartitionMeta } from '../../src/core/types.js';
 import { checkRelPath, layout, parseGscDayPath, resolveInside } from '../../src/store/layout.js';
 import { parseLedgerText } from '../../src/store/ledger.js';
 import { parseJsonSafe } from '../../src/store/ndjson.js';
-import { openStore, sweepTmpFiles } from '../../src/store/store.js';
+import { openScratchStore, openStore, sweepTmpFiles } from '../../src/store/store.js';
 import { memoryStore } from '../helpers/memory-store.js';
 
 const RUN = 'r20261006t061700z-3f2a';
@@ -245,5 +245,23 @@ describe('parsers', () => {
     expect(Object.prototype.hasOwnProperty.call(v, '__proto__')).toBe(false);
     expect(v).toEqual({ a: { b: 2 } });
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+});
+
+describe('openScratchStore (throwaway folders such as the demo)', () => {
+  it('keeps every DataStore rule except fsync: atomic names, immutability and the secret guard', async () => {
+    const secrets = createSecretRegistry({ ci: false });
+    secrets.add('fake-secret-value-0123456789');
+    const store = await openScratchStore(dir, secrets);
+    const rel = layout.gscDay('2026-10-03');
+    await store.writePartition(rel, meta(), rows);
+    expect((await store.readPartition(rel)).rows).toEqual(rows);
+    // Same content again is a no-op; different content is refused (revisions get new names).
+    await store.writePartition(rel, meta(), rows);
+    await expect(store.writePartition(rel, meta(), [{ s: 't', c: 7, i: 1, ps: 1 }])).rejects.toBeInstanceOf(StError);
+    await expect(store.writePartition(layout.gscDay('2026-10-02'), meta({ day: '2026-10-02' }), [{ s: 't', note: 'fake-secret-value-0123456789' }])).rejects.toBeInstanceOf(StError);
+    expect(readdirSync(join(dir, 'gsc', '2026', '10')).filter((f) => f.includes('.tmp-'))).toEqual([]);
+    // A durable store opened on the same folder reads what the scratch store wrote.
+    expect((await (await openStore(dir, secrets)).readPartition(rel)).rows).toEqual(rows);
   });
 });

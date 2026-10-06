@@ -14,6 +14,16 @@ import { syncIndex } from './sync.js';
 /** The open database handle, passed by type to sync.ts and queries.ts so only this file names node:sqlite. */
 export type SqlDb = DatabaseSync;
 
+/**
+ * Secondary indexes on the big GSC tables. A large first load drops them, inserts, then builds them
+ * again in one pass, which is several times faster than keeping them up to date row by row.
+ */
+export const BULK_INDEXES: { name: string; ddl: string }[] = [
+  { name: 'gsc_p_pg', ddl: 'CREATE INDEX IF NOT EXISTS gsc_p_pg ON gsc_p(pg, date)' },
+  { name: 'gsc_qpd_pg', ddl: 'CREATE INDEX IF NOT EXISTS gsc_qpd_pg ON gsc_qpd(pg, date)' },
+  { name: 'gsc_qpd_q', ddl: 'CREATE INDEX IF NOT EXISTS gsc_qpd_q ON gsc_qpd(q, date)' },
+];
+
 /** Bump on any schema change: the index is dropped and rebuilt from the partitions. */
 export const SCHEMA_VERSION = 1;
 
