@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+# Read-only token: CI never pushes, comments or publishes.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ["22.13.0", "24"]
+    steps:
+      - name: Keep LF line endings on Windows
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Lint self-test
+        run: node scripts/lint.mjs --self-test
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build
+      - name: Built CLI loads SQLite without an ExperimentalWarning
+        shell: bash
+        run: |
+          node --input-type=module -e "
+            process.argv = [process.argv[0], 'dist/bin.js', '--version'];
+            await import('./dist/bin.js');
+            await import('./dist/index/db.js');
+          " 2> stderr.txt || true
+          cat stderr.txt
+          if grep -q ExperimentalWarning stderr.txt; then echo 'dist/bin.js let the SQLite ExperimentalWarning through'; exit 1; fi
