@@ -1,0 +1,54 @@
+# Written by searchtrace {{version}}. Runs daily and saves your search history to this PRIVATE repo.
+name: searchtrace
+on:
+  schedule:
+    - cron: "17 6 * * *"          # 06:17 UTC daily, away from the busy top of the hour
+  workflow_dispatch: {}
+permissions:
+  contents: write
+concurrency:
+  group: searchtrace
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Refuse to run in a public repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "$(gh api "repos/$REPO" --jq .private)" != "true" ]; then
+            echo "::error::This repo is public. Search Console data is private business data. Make the repo private, then re-run."
+            exit 2
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run searchtrace
+        run: npx -y searchtrace@{{version}} run --ci --dir searchtrace-data
+        env:
+          SEARCHTRACE_GOOGLE_KEY: ${{ secrets.SEARCHTRACE_GOOGLE_KEY }}
+          DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
+          DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
+      - name: Save history
+        if: always()
+        run: |
+          git config user.name "searchtrace"
+          git config user.email "searchtrace@users.noreply.github.com"
+          cd searchtrace-data
+          for p in config.json meta.json .gitignore gsc google crawl inspect serp findings ledger annotations.ndjson reports graphify-out/graph.json graphify-out/searchtrace.meta.json; do
+            if [ -e "$p" ]; then git add -- "$p"; fi
+          done
+          if git diff --cached --quiet; then echo "Nothing new to save."; exit 0; fi
+          git commit -m "searchtrace: data through $(jq -r .data_through reports/findings.json 2>/dev/null || date -u +%F)"
+          for i in 1 2 3; do git pull --rebase --quiet && git push && exit 0; sleep 5; done
+          exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: searchtrace-report
+          path: searchtrace-data/reports/latest.html
+          retention-days: 30
