@@ -17,11 +17,35 @@ A first run on a small site makes roughly a thousand Search Console requests (a 
 
 Search Console can't tell you whether an AI Overview appeared above your result. searchtrace can check by fetching the results page for some of your searches through [DataForSEO](https://dataforseo.com/)'s standard queue.
 
+### Getting a DataForSEO account
+
+(As of October 2026; check [dataforseo.com/pricing](https://dataforseo.com/pricing) for current terms.)
+
+- New accounts get **$1 free**, which covers about 800 checks.
+- After that you pay in advance, and DataForSEO's **smallest top-up is $50**.
+- The balance never expires. At searchtrace's default $1.00 a month cap, $50 lasts over four years; at a few tens of cents a month, much longer.
+
+searchtrace never spends more than your caps (below), whatever the balance.
+
 ### Price per check
 
-The worst case is **$0.0012 per check** (a standard-queue Google results page with the AI Overview loaded). searchtrace plans with that worst case, then reads back what each task actually cost.
+The price is **$0.0012 per check** (a standard-queue Google results page with the AI Overview loaded). searchtrace plans with at least that much, even if `serp.costPerCheckUsd` says less, and reads back what each task actually cost. If DataForSEO starts charging more, the run notices from a small first batch and sizes the rest from the real price, so the caps still hold; later runs plan with the higher price.
 
-A worked example: 200 searches checked once on desktop is 200 x $0.0012 = $0.24 at most. A small site typically spends between $0.05 and $0.30 a month.
+### What a month costs
+
+Each week searchtrace checks every qualifying search once. A qualifying search ranks in the top 20 with 10 or more impressions in the current window. With daily runs, a month costs about **$0.0012 x qualifying searches x 4.3**, and never more than your monthly cap:
+
+| Qualifying searches | About a month |
+|---|---|
+| 50 | $0.26 |
+| 100 | $0.52 |
+| 165 (a very small site with about 80 clicks a month) | $0.86 |
+| about 190 or more | the default $1.00 cap is reached every month, and checks pause until the 1st |
+| about 250 or more | searchtrace samples instead, spending up to the per-run cap ($0.30) a week |
+
+A worked example: 200 searches checked on desktop is 200 x $0.0012 = $0.24 a week, so that site reaches the $1.00 cap. If you'd rather it cost cents, lower `serp.monthlyBudgetUsd`. `searchtrace run --dry-run` shows how many searches qualify on your site and what this week's checks would cost.
+
+Checks are spread over the weekdays, so run it daily: a site that only runs once a week checks only that weekday's share.
 
 ### Caps
 
@@ -48,7 +72,8 @@ The choice is fixed for the whole ISO week and saved, and checks are spread acro
 - Every task is tagged with a searchtrace id. DataForSEO accounts are often shared with other tools, so only tasks with searchtrace's tag count towards its budget.
 - Each run reconciles against DataForSEO's free task list, so the spend searchtrace believes in matches what DataForSEO recorded.
 - searchtrace writes down its intent to post before posting. If a request times out after it was sent, it is **never retried**: the next run looks it up in the task list instead, so a flaky connection can't double-charge you.
-- `npx searchtrace doctor` shows your balance, roughly how many checks it covers, your cap and what's been used this month.
+- If that list is too long to read in full (a busy shared account), a check searchtrace can't confirm stays reserved and is never sent again; once its week is over it is counted as spent.
+- `searchtrace doctor` shows your balance, roughly how many checks it covers, your cap and what's been used this month.
 
 ### What it can and can't tell you
 

@@ -629,9 +629,26 @@ describe('periodCompare (test 21)', () => {
     const e = periodCompare({ ...base, exclude: [[day(7), day(118)]] });
     expect(e.seSource).toBe('empirical');
     expect(e.se).toBeCloseTo(0.22239, 10);
-    expect(e.freq).toBeCloseTo(6 / 17, 14);
+    // The frequency counts tails, and update periods are the tails: it only ever comes from ordinary
+    // pairs, so with none left there is no "1 in N" sentence (it was 6 / 17, all from update weeks).
+    expect(e.freq).toBeNull();
     // With 8 or more ordinary pairs left, the exclusions still apply (5 of 15, as above).
     expect(periodCompare({ ...base, exclude: [[day(14), day(20)]] }).freq).toBeCloseTo(5 / 15, 14);
+  });
+
+  it('never counts update-period swings in the wobble frequency, even when the SE keeps them', () => {
+    // A planted run of big update swings: weeks 8 to 13 swing +-0.6 and are excluded; the ordinary
+    // weeks are calm. With fewer than 8 ordinary pairs the SE keeps every pair, but freq is null.
+    const lv = [100];
+    const rr = [0.02, -0.02, 0.01, -0.01, 0.02, -0.02, 0.01, 0.6, -0.6, 0.6, -0.6, 0.6, -0.6, 0, 0, 0, 0];
+    for (const v of rr) lv.push(lv[lv.length - 1] * Math.exp(v));
+    lv.push(lv[17], lv[17] * Math.exp(0.22));
+    const vals = lv.flatMap((l) => Array(7).fill(l) as number[]);
+    const e = periodCompare({ ...base, values: vals, exclude: [[day(0), day(56)], [day(56), day(118)]] });
+    expect(e.freq).toBeNull();
+    // Only the update weeks reach |r| >= 0.22; counting them would have printed "1 in 3".
+    const kept = periodCompare({ ...base, values: vals });
+    expect(kept.freq).toBeCloseTo(6 / 17, 14);
   });
 
   it('ignores historical pairs whose windows fall below the floor', () => {

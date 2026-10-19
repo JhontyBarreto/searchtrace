@@ -136,6 +136,22 @@ describe('demo: analysis over the real index', () => {
     });
   }
 
+  it('names AI Overviews on planted uncited searches, never "same spot" because the other device was not checked', () => {
+    const uncited = new Set((out.aio?.facts ?? []).filter((f) => f.aioChecks > 0 && !f.cited).map((f) => f.keyword));
+    const qs = out.findings.filter((f) => f.kind === 'waterfall' && f.unit.level === 'query' && uncited.has(f.unit.key));
+    expect(qs.length).toBeGreaterThan(0);
+    for (const f of qs) expect(f.template, f.unit.key).not.toBe('same_spot_checked');
+  });
+
+  it('tells each real but small change as small, never as wobble with "nothing to act on"', () => {
+    for (const f of out.findings.filter((x) => x.real === 'noise' && x.reason === 'noise_small' && x.template === 'noise')) {
+      expect(f.slots.verdict_reason).toBe('noise_small');
+    }
+    const head = out.findings.find((f) => f.kind === 'headline');
+    expect(head?.effect.ci95?.[1]).toBeLessThan(0);
+    expect(head?.reason).not.toBe('noise_bounded');
+  });
+
   it('keeps the waterfall invariant for every scope and reconciles page and property clicks', () => {
     for (const s of out.scopes) {
       const sum = Object.values(s.bars).reduce((a, b) => a + b, 0);
@@ -203,6 +219,21 @@ describe('demo: the demo command, then run and why, offline', () => {
     const html = await readFile(path, 'utf8');
     expect(html).not.toMatch(/<script/i);
     expect(html).not.toMatch(/src="http|href="http[^"]*\.css/);
+  });
+
+  it('tells one story once: no top-level sentence repeats more than 3 times, and no wobble says "nothing to act on" next to a real change', async () => {
+    const md = await readFile(join(dir, layout.reportMd), 'utf8');
+    const top = md.split('\n').filter((l) => l.startsWith('- '));
+    const counts = new Map<string, number>();
+    for (const line of top) {
+      for (const sentence of line.replace(/\[Check it yourself\]\([^)]*\)/g, '').split(/(?<=\.) /)) {
+        if (sentence.length < 40) continue;
+        counts.set(sentence, (counts.get(sentence) ?? 0) + 1);
+      }
+    }
+    const worst = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+    expect(worst?.[1] ?? 0, worst?.[0]).toBeLessThanOrEqual(3);
+    expect(md).not.toMatch(/Small change[^\n]*Nothing to act on/);
   });
 
   it('re-runs to byte-identical findings.json (D24), with no second findings partition', async () => {

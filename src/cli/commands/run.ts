@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { StError, ExitCode } from '../../core/errors.js';
+import { cli, docUrl } from '../../core/install.js';
 import { createSecretRegistry } from '../../core/secrets.js';
 import { diffDays, ptDate } from '../../core/time.js';
 import type { Config, ExitCodeName, PhaseName, PhaseResult, PlanLine, RunSummary } from '../../core/types.js';
@@ -55,7 +56,7 @@ export function formatPlan(property: string, plan: PlanLine[], config: Config, n
   else if (config.serp.provider === 'none') lines.push(row('AI Overview checks', 'off · add a DataForSEO login to turn on'));
   else if (noPaid) lines.push(row('AI Overview checks', 'skipped for this run (--no-paid)'));
   else lines.push(row('AI Overview checks', 'nothing due this week'));
-  lines.push('', 'Run it for real: npx searchtrace run');
+  lines.push('', `Run it for real: ${cli('run')}`);
   return `${lines.join('\n')}\n`;
 }
 
@@ -160,10 +161,11 @@ export function formatRunSummary(s: RunSummary, o: { property: string; config: C
   lines.push('');
   const dirArg = o.dir === join(o.cwd, 'searchtrace-data') ? '' : ` --dir ${displayPath(o.cwd, o.dir)}`;
   if (s.reportPath) lines.push(`Report   ${pathToFileURL(s.reportPath).href}`);
-  lines.push(`Why      npx searchtrace why${dirArg}`);
+  lines.push(`Why      ${cli('why')}${dirArg}`);
   if (s.graphPath) {
     const nodes = last.get('graph')?.rows ?? 0;
-    lines.push(`Graph    ${displayPath(o.cwd, s.graphPath)} (${fmtInt(nodes)} nodes) · ask it in Claude: see docs/GRAPHIFY.md`);
+    lines.push(`Graph    ${displayPath(o.cwd, s.graphPath)} (${fmtInt(nodes)} nodes)`);
+    lines.push(`         ask it in Claude: ${docUrl('GRAPHIFY.md')}`);
   }
   if (s.exit === 'partial') lines.push('', "Some steps didn't finish. The report uses everything collected so far.");
   return `${lines.join('\n')}\n`;
@@ -196,6 +198,7 @@ export async function runCommand(args: string[], partial?: Partial<CliDeps>): Pr
       quiet: Boolean(v.quiet),
       color: colorOn(deps, ci),
       sleep: deps.sleep,
+      ...(deps.resolveHost ? { resolveHost: deps.resolveHost } : {}),
       onPhase: progress ? (name) => deps.stderr.write(`  ${PHASE_LABEL[name]}...\n`) : undefined,
     });
     if (v.json) {

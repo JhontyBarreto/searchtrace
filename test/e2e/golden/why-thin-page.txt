@@ -1,22 +1,19 @@
 /areas/pellowby · last 28 days vs the 28 before
 
-  Not enough data yet · Why: Unclear · Possible
-  Not enough data to tell yet. With about 7.3 clicks a week, only a change of roughly 87% or more
+  Not enough data yet
+  Not enough data to tell yet. With about 7.3 clicks a week, only a change of roughly 63% or more
   stands out from normal ups and downs over 4 weeks, and this one was -41%. At this traffic level, a
   change much smaller than that can't be confirmed even with a year of data. Impressions barely
   moved (0%), but there are too few of them to judge either.
 
   Where the clicks went (estimated, 95% range)
-    Fewer or more searches              +0    (+0 to +0)
-    Ranking                             +0    (+0 to +0)
-    Same spot, different click rate    -12    (-27 to +4)
-    AI Overview citation                +0    (+0 to +0)
-    Appeared or disappeared             +0    (+0 to +0)
-    Unattributed searches                     (included above; private or not reported)
+    Same position, fewer clicks        -12    (-27 to +4)
+    Total                              -12    (-20 to +5)
+    Google doesn't name the searches behind 36% of your clicks, for privacy. Their clicks are
+    already inside the numbers above; we just can't say which search they came from.
 
   Evidence
-    Measured   Search Console: 29 -> 17 clicks, 560 -> 560 impressions, position 4.0 -> 4.0   gsc/2026/10/2026-10-03.ndjson.gz
-    Estimated  Click waterfall over 2 units, 1,000 bootstrap replicates: -27 to +4 clicks   gsc/2026/10/2026-10-03.ndjson.gz
+    Measured   Search Console: 29 -> 17 clicks, 560 -> 560 impressions, position 4.0 -> 4.0
 
   Other explanations
     Fewer searches: ruled out, impressions held (0%).
@@ -25,5 +22,5 @@
     Google update: possible, it overlaps the September 2026 spam update.
     AI Overviews: not checked yet.
 
-  What would prove this wrong: we'll know more by 31 Oct 2026.
+  When we'll know: by 31 Oct 2026.
   Check it yourself: https://search.google.com/search-console/performance/search-analytics?resource_id=sc-domain%3Apipewell-plumbing.example&start_date=20260809&end_date=20261003&page=!https%3A%2F%2Fpipewell-plumbing.example%2Fareas%2Fpellowby

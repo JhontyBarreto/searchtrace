@@ -70,10 +70,32 @@ describe('escape', () => {
   });
 
   it('escapes Markdown, including table pipes, links, mentions and line breaks', () => {
+    // "@" gets an empty span after it: GitHub decodes "&#64;" back into a live mention, so the old
+    // escape gave false confidence.
     expect(mdEscape('<b>[x](javascript:alert(1)) | @someone `code`\nnext')).toBe(
-      '&lt;b&gt;\\[x\\](javascript:alert(1)) \\| &#64;someone \\`code\\` next',
+      '&lt;b&gt;\\[x\\](javascript:alert(1)) \\| @<span></span>someone \\`code\\` next',
     );
     expect(mdEscape('a_b*c')).toBe('a\\_b\\*c');
+  });
+
+  it('breaks every GitHub autolink and mention trigger in untrusted text', () => {
+    const hostile = ['https://evil.example/login', 'HTTPS://evil.example', 'www.evil.example', '_www.evil.example/x', '(www.evil.example)',
+      'WWW.evil.example', 'evil@evil.example', 'mailto:evil@evil.example', '@octocat', 'see https://a.example and www.b.example'];
+    for (const h of hostile) {
+      const m = mdEscape(h);
+      expect(m, h).not.toMatch(/(^|[^\\]):\/\//);
+      expect(m, h).not.toMatch(/www\.(?!\\)/i);
+      expect(m.match(/www/gi)?.length ?? 0, h).toBe(m.match(/www\\\./gi)?.length ?? 0);
+      for (const at of m.matchAll(/@/g)) expect(m.slice(at.index, at.index + 14), h).toBe('@<span></span>');
+    }
+    // Rendered text keeps the characters: a copied query still matches in Search Console.
+    expect(mdEscape('www.facebook.com login')).toBe('www\\.facebook.com login');
+  });
+
+  it('leaves a bare & as typed and escapes only what would start an entity', () => {
+    expect(mdEscape('Google stopped honouring &num=100')).toBe('Google stopped honouring &num=100');
+    expect(mdEscape('link reclamation & recovery')).toBe('link reclamation & recovery');
+    expect(mdEscape('x &amp; y &#64; z')).toBe('x &amp;amp; y &amp;#64; z');
   });
 
   it('guards CSV cells', () => {

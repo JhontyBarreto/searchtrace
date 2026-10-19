@@ -4,22 +4,23 @@ import type { Cell, CtrCurve } from '../../src/core/types.js';
 import { brandTokens, buildBrandMatcher, compact, damerauLevenshtein, domainLabel } from '../../src/analyze/brand.js';
 
 describe('brand matcher', () => {
-  const m = buildBrandMatcher({ siteDomain: 'seoengico.com', siteName: 'SEO Engico', terms: [] });
+  // A made-up glued brand: a generic prefix ("seo") on a name ending in "co", which must not lose its "co".
+  const m = buildBrandMatcher({ siteDomain: 'seonorvico.example', siteName: 'SEO Norvico', terms: [] });
 
-  it('18. seoengico: brand and non-brand searches, and the splitter yields engico', () => {
-    expect(m.tokens).toEqual(['engico']);
-    for (const q of ['seo engico', 'engico seo', 'seoengico.com', 'seo engigo']) expect(m.isBrand(q)).toBe(true);
+  it('18. seonorvico: brand and non-brand searches, and the splitter yields norvico', () => {
+    expect(m.tokens).toEqual(['norvico']);
+    for (const q of ['seo norvico', 'norvico seo', 'seonorvico.example', 'seo norvigo']) expect(m.isBrand(q)).toBe(true);
     expect(m.isBrand('seo agency london')).toBe(false);
   });
 
   it('handles accents, case, typos and transpositions, and leaves short words alone', () => {
     expect(compact('Pipéwell  Plumbing!')).toBe('pipewellplumbing');
-    expect(m.isBrand('ENGICO reviews')).toBe(true);
-    expect(m.isBrand('engcio')).toBe(true); // adjacent transposition
-    expect(m.isBrand('seo engineering')).toBe(false);
+    expect(m.isBrand('NORVICO reviews')).toBe(true);
+    expect(m.isBrand('norvcio')).toBe(true); // adjacent transposition
+    expect(m.isBrand('seo northern')).toBe(false);
     expect(m.isBrand('')).toBe(false);
-    expect(damerauLevenshtein('engico', 'engigo')).toBe(1);
-    expect(damerauLevenshtein('engico', 'engcio')).toBe(1);
+    expect(damerauLevenshtein('norvico', 'norvigo')).toBe(1);
+    expect(damerauLevenshtein('norvico', 'norvcio')).toBe(1);
     expect(damerauLevenshtein('kitten', 'sitting', 1)).toBe(2);
   });
 
@@ -31,7 +32,7 @@ describe('brand matcher', () => {
     expect(brandTokens('bestwebdesigns')).toEqual([]);
     expect(brandTokens('acmeplumbing')).toEqual(['acme']);
     expect(brandTokens('acme-heating')).toEqual(['acmeheating']);
-    expect(brandTokens('seo-engico')).toEqual(['engico']);
+    expect(brandTokens('seo-norvico')).toEqual(['norvico']);
     const p = buildBrandMatcher({ siteDomain: 'pipewell-plumbing.example', siteName: 'Pipewell Plumbing', terms: ['Pipewell & Sons'] });
     expect(p.isBrand('pipewell plumbers reviews')).toBe(true);
     expect(p.isBrand('pipewel plumbing')).toBe(true);

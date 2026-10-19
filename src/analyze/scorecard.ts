@@ -11,7 +11,7 @@ import { addDays, diffDays, ptDate } from '../core/time.js';
 import type {
   EvidenceRef, Finding, GoogleEvent, GoogleEventKind, IdCheck, IsoDate, PeriodEffect, ScorecardInput, SiteChange, UpdateRow, Verdict,
 } from '../core/types.js';
-import { REAL_LABEL } from '../report/copy.js';
+import { realLabel } from '../report/copy.js';
 import { layout } from '../store/layout.js';
 import { benjaminiHochberg, periodCompare, seasonalSeries } from './stats.js';
 import { confidenceFor, decideVerdict } from './verdicts.js';
@@ -188,7 +188,7 @@ function toFinding(d: Draft, i: ScorecardInput, D: IsoDate, q: { clicks: number 
   const c = row.clicks;
   const measured = c !== null && row.window !== null;
   const real: Verdict = measured ? c.real : 'underpowered';
-  const label = (eff: PeriodEffect | null): string => (eff ? REAL_LABEL[eff.real] : '');
+  const label = (eff: PeriodEffect | null): string => (eff ? realLabel(eff) : '');
   const end = row.end ?? eventDates(d.ev).e;
   const cf = measured && d.sums && d.sums.pre > 0 ? (c.pre * d.sums.post) / d.sums.pre : null;
   const absolute = measured && cf !== null ? c.post - cf : null;

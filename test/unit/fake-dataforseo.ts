@@ -45,6 +45,10 @@ export interface FakeDfsOptions {
   /** Builds the SERP for a task; default has an AI Overview on keywords containing 'how'. */
   serp?: (t: FakeTask) => Record<string, unknown>;
   readyAfterMs?: number;
+  /** id_list lags: a task shows up only this long after it was created. */
+  idListLagMs?: number;
+  /** A per-task status code task_get answers with instead of the result (e.g. 40102). */
+  taskCode?: (t: FakeTask) => number | undefined;
 }
 
 export interface FakeDfs {
@@ -126,12 +130,14 @@ export function fakeDataForSeo(o: FakeDfsOptions): FakeDfs {
   };
 
   const idList = (req: FakeRequest): FakeReply => {
-    const [q] = req.json<{ datetime_from: string; datetime_to: string; limit: number; offset: number }[]>();
+    const [q] = req.json<{ datetime_from: string; datetime_to: string; limit: number; offset: number; sort?: string }[]>();
     const from = parseDfs(q.datetime_from);
     const to = parseDfs(q.datetime_to);
+    const visibleBy = o.clock.now().getTime() - (o.idListLagMs ?? 0);
+    const dir = q.sort === 'desc' ? -1 : 1;
     const inRange = tasks
-      .filter((t) => t.postedAt.getTime() >= from && t.postedAt.getTime() <= to)
-      .sort((a, b) => a.postedAt.getTime() - b.postedAt.getTime() || (a.id < b.id ? -1 : 1));
+      .filter((t) => t.postedAt.getTime() >= from && t.postedAt.getTime() <= to && t.postedAt.getTime() <= visibleBy)
+      .sort((a, b) => dir * (a.postedAt.getTime() - b.postedAt.getTime()) || dir * (a.id < b.id ? -1 : 1));
     const page = inRange.slice(q.offset, q.offset + q.limit).map((t) => ({
       id: t.id, url: `${BASE}/v3/serp/google/organic/task_get/advanced/${t.id}`, datetime_posted: dfsTime(t.postedAt),
       datetime_done: dfsTime(new Date(t.postedAt.getTime() + 60_000)), status: 'Completed', cost: t.cost,
@@ -152,6 +158,8 @@ export function fakeDataForSeo(o: FakeDfsOptions): FakeDfs {
     const t = tasks.find((x) => x.id === id);
     if (!t) return { body: envelope([{ id, status_code: 40400, status_message: 'Not Found.', cost: 0, result: null }]) };
     if (!ready(t)) return { body: envelope([{ id, status_code: 40602, status_message: 'Task In Queue.', cost: 0, result: null }]) };
+    const forced = o.taskCode?.(t);
+    if (forced !== undefined) return { body: envelope([{ id, status_code: forced, status_message: forced === 40102 ? 'No Search Results.' : 'Error.', cost: 0, result: null }]) };
     t.collected = true;
     const result = (o.serp ?? ((x: FakeTask) => defaultSerp(x)))(t);
     return {

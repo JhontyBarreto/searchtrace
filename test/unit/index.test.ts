@@ -1,5 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -290,6 +290,39 @@ describe('index file handling', () => {
     const b = await index(path);
     expect(b.siteDaily(...ALL)).toEqual(daily);
     expect(await b.sync(store)).toEqual({ loaded: 1, skipped: 16, removed: 0 });
+  });
+
+  it('two processes syncing one index at once neither crash nor load a partition twice', async () => {
+    const store = await openStore(join(dir, 'data'), createSecretRegistry({ ci: false }));
+    await seedDataDir(store);
+    const path = join(dir, 'data', layout.index);
+    // Two handles open a missing index at the same moment, then both sync (a run and `why`).
+    const [a, b] = await Promise.all([index(path), index(path)]);
+    const results = await Promise.all([a.sync(store), b.sync(store)]);
+    expect(results.map((r) => r.loaded + r.skipped).every((n) => n === 17)).toBe(true);
+    const raw = new DatabaseSync(path);
+    const count = (t: string): number => Number((raw.prepare(`SELECT count(*) AS n FROM ${t}`).get() as { n: number }).n);
+    const counts = { snapshot: count('snapshot'), inspection: count('inspection'), serp: count('serp'), gevent: count('gevent'), gsc_qpd: count('gsc_qpd') };
+    raw.close();
+    // The same as one clean sync.
+    const one = await openIndex(join(dir, 'clean.sqlite'));
+    await one.sync(store);
+    one.close();
+    const clean = new DatabaseSync(join(dir, 'clean.sqlite'));
+    const cleanCount = (t: string): number => Number((clean.prepare(`SELECT count(*) AS n FROM ${t}`).get() as { n: number }).n);
+    expect(counts).toEqual({ snapshot: cleanCount('snapshot'), inspection: cleanCount('inspection'), serp: cleanCount('serp'), gevent: cleanCount('gevent'), gsc_qpd: cleanCount('gsc_qpd') });
+    clean.close();
+    expect(existsSync(`${path}.lock`)).toBe(false);
+  });
+
+  it('reclaims a sync lock left by a process that is gone', async () => {
+    const store = await openStore(join(dir, 'data'), createSecretRegistry({ ci: false }));
+    await seedDataDir(store);
+    const path = join(dir, 'data', layout.index);
+    writeFileSync(`${path}.lock`, JSON.stringify({ pid: 2 ** 30, host: hostname(), at: '2026-10-06T06:17:00Z' }));
+    const db = await index(path);
+    expect((await db.sync(store)).loaded).toBe(16);
+    expect(existsSync(`${path}.lock`)).toBe(false);
   });
 
   it('rebuilds a corrupt index file', async () => {

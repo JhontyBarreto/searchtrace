@@ -18,8 +18,8 @@ export const GENERIC_WORDS: readonly string[] = [
 const GENERIC = new Set(GENERIC_WORDS);
 /**
  * Longest first, so 'designs' is stripped before 'design'. Two-letter words ('co', 'uk', 'my') are
- * never stripped from inside a run of letters: they would eat real brand endings ('engico' must not
- * become 'engi').
+ * never stripped from inside a run of letters: they would eat real brand endings ('norvico' must not
+ * become 'norvi').
  */
 const GENERIC_BY_LENGTH = GENERIC_WORDS.filter((w) => w.length >= 3).sort((a, b) => b.length - a.length || (a < b ? -1 : 1));
 
@@ -46,7 +46,7 @@ function words(q: string): string[] {
     .filter((w) => w !== '');
 }
 
-/** The registrable label of a domain: 'seoengico.com' -> 'seoengico', 'www.pipewell-plumbing.co.uk' -> 'pipewell-plumbing'. */
+/** The registrable label of a domain: 'seonorvico.example' -> 'seonorvico', 'www.pipewell-plumbing.co.uk' -> 'pipewell-plumbing'. */
 export function domainLabel(siteDomain: string): string {
   const parts = String(siteDomain ?? '').toLowerCase().replace(/\.$/, '').split('.').filter((p) => p !== '');
   while (parts.length > 1 && parts[0] === 'www') parts.shift();
@@ -82,7 +82,7 @@ function stripGeneric(piece: string): string {
 /**
  * Brand tokens from a domain label (5.2): the whole label is compacted (hyphens go), then generic
  * words are stripped from either end, longest first, while 4+ characters remain. The leftover is
- * the token unless it is itself generic. 'seoengico' -> ['engico'], 'pipewell-plumbing' -> ['pipewell'].
+ * the token unless it is itself generic. 'seonorvico' -> ['norvico'], 'pipewell-plumbing' -> ['pipewell'].
  * The label is not split at hyphens: 'acme-heating' must not make 'heating' a brand word.
  */
 export function brandTokens(label: string): string[] {

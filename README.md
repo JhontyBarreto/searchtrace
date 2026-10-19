@@ -1,34 +1,35 @@
 <h1 align="center">searchtrace</h1>
-<p align="center"><b>Why did my Google traffic change?</b><br>
-A straight answer from your own Search Console data, with the evidence.<br>
-And an honest "we can't tell yet" when that's the truth.</p>
+<p align="center"><b>Why did my Google traffic drop?</b><br>
+A straight answer from your own Google Search Console data, with the evidence: core and spam updates,<br>
+your own changes, demand, and AI Overviews. And an honest "we can't tell yet" when that's the truth.</p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/searchtrace"><img alt="npm" src="https://img.shields.io/npm/v/searchtrace"></a>
+  <a href="https://github.com/JhontyBarreto/searchtrace/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/JhontyBarreto/searchtrace/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <img alt="node" src="https://img.shields.io/badge/node-%E2%89%A522.13-blue">
-  <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
-  <img alt="servers" src="https://img.shields.io/badge/servers-none-black">
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-green"></a>
 </p>
 
-Your clicks dropped. Search Console shows you the line going down, but not why. Was it a Google update, something you changed, fewer people searching, or an AI Overview sitting above you? Or is it just a small site wobbling the way small sites do?
+Your clicks dropped. Search Console shows you the line going down, but not why. Was it a Google core update, something you changed, fewer people searching, or an AI Overview sitting above you? Or is it just a small site wobbling the way small sites do?
 
-searchtrace is a command-line tool that works through those questions using your own data. It lines every change up against Google's confirmed updates and against changes on your site, splits the lost clicks into parts that add up exactly, and labels each finding with how sure it can honestly be. When the data can't support an answer, it says so, and tells you what it would take.
+searchtrace is a command-line tool that works through those questions using your own data. It runs on your machine (there is no searchtrace server), lines every change up against Google's confirmed updates and against changes on your site, splits the lost clicks into parts that add up exactly, and labels each finding with how sure it can honestly be. When the data can't support an answer, it says so, and tells you what it would take.
 
 ```bash
-npx searchtrace demo
+npx -y "github:JhontyBarreto/searchtrace#v0.1.0" demo
 ```
 
-A full report on a made-up site, built offline in about 15 seconds. No login, nothing to install.
+A full report on a made-up site, built offline in under 30 seconds. No login. The first time, npx downloads searchtrace from GitHub and builds it, which takes about a minute and needs Node 22.13 or newer and git. Add `--out ./demo` to keep the demo files.
 
-## What it tells you
+searchtrace is installed from GitHub, not from the npm registry. If you ever see a package called `searchtrace` on npm, it isn't this project.
 
-- **Was it you or Google?** Each drop is checked against Google's confirmed updates and against changes on your site, dated from when Googlebot actually recrawled the page (from URL Inspection's `lastCrawlTime`). Pages you didn't change are the control group.
-- **Where did the clicks go?** Every change splits into parts that add up exactly: fewer searches, a ranking move, and fewer clicks at the same position. Searches Google hides for privacy are counted too, as their own line.
-- **Is it AI Overviews?** Optionally, it checks whether an AI Overview now sits above you and which sites it cites. Paid per check, capped, usually cents a month.
+## Why did my Google traffic drop? What it checks
+
+- **Was it a Google update, or you?** Each drop is checked against Google's confirmed core, spam and other ranking updates, and against changes on your site, dated from when Googlebot actually recrawled the page (from URL Inspection's `lastCrawlTime`). Pages you didn't change are the control group.
+- **Where did the clicks go?** Every change splits into parts that add up exactly to the total: more or fewer searches, a ranking move, a different click rate at the same position, and searches you started or stopped showing for. With AI Overview checks on, a position jump that was really an AI Overview citation gets its own part too, so it isn't mistaken for a ranking gain. Searches Google hides for privacy have no line of their own. They are folded into those parts through each page's totals, so nothing drops out of the sum.
+- **Is it AI Overviews?** Optionally, it checks whether an AI Overview now sits above you and which sites it cites. Paid per check through DataForSEO and capped at $1.00 a month by default. DataForSEO needs a $50 prepaid top-up once its $1 free trial is used up.
 - **Is it even real?** Every finding says **Real change**, **Normal wobble**, **Not enough data yet** or **Can't separate the causes**, and how big a change would have to be before it could tell.
 - **It remembers.** Run it daily and it keeps your history past Search Console's 16-month limit, as a knowledge graph you can question in Claude or Cursor.
 
-Here is the kind of thing it writes (example output; the numbers are made up):
+Here is the kind of thing it writes (example output for a small site; some figures come from a real one, others are changed):
 
 ```text
 The answer
@@ -44,47 +45,61 @@ Also worth knowing
 
 That second sentence is the point. A site with a few hundred clicks a month can't prove a 10% drop, and a tool that pretends otherwise sends you chasing noise.
 
-## Use it on your site (about 6 minutes)
+## Install
 
-You need Node 22.13 or newer and access to a Search Console property. Adding the robot account as a user needs an owner of the property.
+For regular use, install the release tarball from GitHub. It is already built, so it needs no git and no compiler:
 
 ```bash
-npx searchtrace setup
+npm install -g https://github.com/JhontyBarreto/searchtrace/releases/download/v0.1.0/searchtrace-0.1.0.tgz
+```
+
+After that the command is just `searchtrace`. You need Node 22.13 or newer.
+
+- On npm 12 or newer, add `--allow-remote=all` to that line (and `--allow-git=all` to the `npx` line above). npm 12 blocks installs from anywhere but the npm registry unless you say so. Older npm versions accept the flag and ignore it.
+- Don't use `npm install -g github:JhontyBarreto/searchtrace`. A global install from a git URL fails on npm 10 and 11 with "tsc: command not found". The tarball above is the same code, already built.
+- Prefer to check the download first? Each release has a `SHA256SUMS` file next to the tarball.
+
+## Use it on your site (about 6 minutes)
+
+You need access to a Search Console property. Adding the robot account as a user needs an owner of the property.
+
+```bash
+searchtrace setup
 ```
 
 The wizard walks you through giving searchtrace read access, then writes everything to one folder, `searchtrace-data/`. There are two ways in:
 
 - **A robot account (recommended).** You create a free Google Cloud service account, download its key, and add its email as a user on your property. It keeps working on a schedule. The wizard prints each link and waits for you; it never opens anything itself.
-- **gcloud on this computer.** If you already use `gcloud auth application-default login`, searchtrace can use that credential.
+- **gcloud on this computer.** If you use the Google Cloud CLI, you can sign in once with your own OAuth client and the Search Console scope (see [docs/SETUP.md](docs/SETUP.md)). A plain `gcloud auth application-default login` won't work, because it doesn't include Search Console access.
 
 Then:
 
 ```bash
-npx searchtrace run       # collect, analyse, write the report and the graph
-npx searchtrace why       # the evidence behind the headline
-npx searchtrace why /pricing            # one page
-npx searchtrace why "emergency plumber" # one search
-npx searchtrace why 2026-09-14          # what happened that day
-npx searchtrace doctor    # check the setup, with a one-line fix for anything wrong
+searchtrace run       # collect, analyse, write the report and the graph
+searchtrace why       # the evidence behind the headline
+searchtrace why /pricing            # one page
+searchtrace why "emergency plumber" # one search
+searchtrace why 2026-09-14          # what happened that day
+searchtrace doctor    # check the setup, with a one-line fix for anything wrong
 ```
 
-The first run pulls the full 16 months Search Console keeps, which takes a few minutes for a small site. After that, a daily run only fetches what's new.
+The first run takes about 10 minutes on a small site: roughly 4 minutes downloading the 16 months Search Console keeps, 3 to 4 minutes reading your pages, and 3 minutes of index checks. A bigger site takes longer. After that, a daily run only fetches what's new and takes seconds.
 
-Setting it up from a script instead? `npx searchtrace setup --yes --property sc-domain:example.com --credentials ~/keys/searchtrace.json`. On an existing setup, `--yes` merges your flags into the config rather than replacing it. Full details are in [docs/SETUP.md](docs/SETUP.md).
+Setting it up from a script instead? `searchtrace setup --yes --property sc-domain:example.com --credentials ~/keys/searchtrace.json`. On an existing setup, `--yes` merges your flags into the config rather than replacing it. Full details are in [docs/SETUP.md](docs/SETUP.md).
 
 ### Record changes you made before you installed it
 
 searchtrace snapshots your pages on every run, so from now on it can date your changes itself. For anything earlier, tell it:
 
 ```bash
-npx searchtrace note "New title template on blog posts" --date 2026-09-09 --urls "/blog/*"
+searchtrace note "New title template on blog posts" --date 2026-09-09 --urls "/blog/*"
 ```
 
 The next run tests that change against the pages you didn't touch.
 
 ## How it decides, and how we know it's honest
 
-- **An exact click waterfall.** Each page and search is split into demand, ranking and click-rate parts with a symmetric formula (the Shapley split), so the parts always add up to the real change and don't depend on the order you look at them.
+- **An exact click waterfall.** Each page and search is split into demand, ranking and click-rate parts with a symmetric formula (the Shapley split), so the parts always add up to the total change and don't depend on the order you look at them.
 - **Control groups.** A change on your site is compared with similar pages you didn't change, over the same days. If those fell just as much, your change is ruled out.
 - **Dated by Googlebot, not by you.** A change only counts from when Google recrawled the page, using URL Inspection's `lastCrawlTime`.
 - **False-discovery control.** Many series are scanned for change points at once, so searchtrace controls the false-discovery rate (Benjamini-Hochberg) instead of reporting every lucky blip.
@@ -107,32 +122,34 @@ All of it lands in `searchtrace-data/`:
 
 searchtrace gets more useful each day it runs: page snapshots let it date your changes, URL Inspection records when Google saw them, and your history stops falling off Search Console's 16-month edge.
 
-- **GitHub Actions in a private repo (free).** `npx searchtrace setup --github` writes `.github/workflows/searchtrace.yml`, pinned to the exact searchtrace version. It refuses to run in a public repo, commits only the files it lists, and never runs two at once. See [docs/GITHUB-ACTION.md](docs/GITHUB-ACTION.md).
-- **Your own machine.** The wizard can print a cron line instead.
+- **GitHub Actions in a private repo (free, for developers).** `searchtrace setup --github` writes `.github/workflows/searchtrace.yml`. It builds searchtrace from GitHub at the exact commit you set it up with, with every dependency pinned by the lockfile and every action pinned to a commit. It refuses to run in a public repo, runs your secrets in a job that can't push, commits only the files it lists, and never runs two at once. See [docs/GITHUB-ACTION.md](docs/GITHUB-ACTION.md).
+- **Your own machine.** The wizard can print a cron line instead, with full paths so cron's bare environment can't break it.
 
 Exit codes are 0 ok, 1 internal error, 2 config, 3 auth or permission, 4 partial (a step failed but the report was still written), so a scheduler can tell them apart.
 
 ## Ask your search history questions in Claude or Cursor
 
-Each run writes a graph in the format [graphify](https://pypi.org/project/graphifyy/) reads (install it with `uv tool install graphifyy` or `pipx install graphifyy`), covering your pages, searches, sections, Google updates, your changes and every finding, with dates on all of it. Point Claude Code, Claude Desktop or Cursor at it and ask things like:
+Search Console forgets after 16 months and never knows what you changed. Each run writes a graph that keeps every day, change and finding, so Claude can answer with dates and evidence. It's in the format [graphify](https://pypi.org/project/graphifyy/) reads, covering your pages, searches, sections, Google updates, your changes and every finding. Ask things like:
 
 - "Why did /pricing lose clicks in September?"
 - "Which pages did the December core update hit, and did we change any of them first?"
 - "What happened the last few times we changed title tags?"
 
+Install graphify with its MCP server, then connect it to Claude Code:
+
 ```bash
+uv tool install --force "graphifyy[mcp]"      # or: pipx install --force "graphifyy[mcp]"
 cd searchtrace-data
-graphify cluster-only . --no-viz --no-label
-graphify query "which pages lost clicks after the September update" --budget 1500
+claude mcp add seo-history -- graphify-mcp "$PWD/graphify-out/graph.json"
 ```
 
-`npx searchtrace doctor` prints the exact command to connect it to Claude. Setup for each app is in [docs/GRAPHIFY.md](docs/GRAPHIFY.md).
+`searchtrace doctor` checks the install and prints the exact connect command, with full paths for Claude Desktop and Cursor. Setup for each app is in [docs/GRAPHIFY.md](docs/GRAPHIFY.md).
 
 ## Costs
 
 Free by default. Search Console, URL Inspection, Google's update feed and fetching your own pages cost nothing.
 
-AI Overview checks are optional and go through [DataForSEO](https://dataforseo.com/), which you pay directly. Each check costs at most $0.0012. searchtrace has a monthly cap (default $1.00) and a per-run cap (default $0.30), reconciles every charge against DataForSEO's free task list, and never retries a paid request it isn't sure about. A small site typically spends cents a month. See [docs/COSTS.md](docs/COSTS.md).
+AI Overview checks are optional and go through [DataForSEO](https://dataforseo.com/), which you pay directly. Each check costs at most $0.0012, and each qualifying search is checked once a week. searchtrace has a monthly cap (default $1.00) and a per-run cap (default $0.30), reconciles every charge against DataForSEO's free task list, and never retries a paid request it isn't sure about. Expect to use most of the default $1.00 cap: even a very small site can have 150 or more qualifying searches. DataForSEO gives you $1 free to start (about 800 checks); after that their smallest top-up is $50, which stays on your balance until you use it. See [docs/COSTS.md](docs/COSTS.md).
 
 ## Privacy and security
 
@@ -142,7 +159,16 @@ AI Overview checks are optional and go through [DataForSEO](https://dataforseo.c
 - Reports escape every query, URL and title, carry a strict Content-Security-Policy and contain no scripts.
 - The Action refuses to run in a public repo, because Search Console data is private business data.
 
-More in [docs/PRIVACY.md](docs/PRIVACY.md).
+More in [docs/PRIVACY.md](docs/PRIVACY.md). To report a security problem privately, see [SECURITY.md](.github/SECURITY.md).
+
+## Seeing searchtrace in your server logs?
+
+The crawler identifies itself as `searchtrace/0.1 (+https://github.com/JhontyBarreto/searchtrace)`. It only fetches pages for someone who owns the site in Google Search Console, a few hundred pages at most, at about one request a second, and it follows robots.txt. To block it:
+
+```text
+User-agent: searchtrace
+Disallow: /
+```
 
 ## FAQ
 
@@ -152,7 +178,7 @@ More in [docs/PRIVACY.md](docs/PRIVACY.md).
 
 **Does it work with WordPress (or Shopify, Webflow, anything else)?** Yes. It doesn't need a plugin: it reads Search Console and fetches your public pages, so the CMS doesn't matter.
 
-**What about big sites?** Search Console exports up to 50,000 rows per day and slice; past that, searchtrace marks the day as truncated rather than pretending it's complete. History grows by a few kilobytes a day for a small site and roughly 240 MB a year at around 35,000 rows a day, which a git repo handles for a couple of years.
+**What about big sites?** Search Console exports up to 50,000 rows per day and slice; past that, searchtrace marks the day as truncated rather than pretending it's complete. Committed history grows by about 125 KB a day for a small site once git packs it (roughly 45 MB a year). Most of that is the daily findings snapshot, report and graph; the raw Search Console data is about 10 KB a day. Sites with tens of thousands of rows a day grow by a few hundred MB a year, which a git repo handles for a couple of years.
 
 **How is it different from GSC Insights, SEO Gets, GSC Wizard, AIOSEO or SEOTesting?** Those tools are good at making Search Console easier to browse, and some run deliberate SEO tests. searchtrace is narrower: it tries to say *why* a change happened, with control groups and recrawl dates, and it will tell you plainly when it can't. It's open source, runs on your machine or in your own private repo, and keeps the data with you. Plenty of people will want both.
 
@@ -171,7 +197,9 @@ npm ci
 npm run lint && npm run typecheck && npm test
 ```
 
-Tests run on synthetic data only. Please never add real client data, Search Console exports or credentials to the repo, in tests or anywhere else. The lint script also enforces a few house rules: no `child_process`, no `eval`, network access only through one module, injected clocks and random seeds in the analysis code, and no em or en dashes in any text.
+`npm ci` also builds `dist/` (the `prepare` script), which is what a GitHub install runs. Tests run on synthetic data only. Please never add real client data, Search Console exports or credentials to the repo, in tests or anywhere else. The lint script also enforces a few house rules: no `child_process`, no `eval`, network access only through one module, injected clocks and random seeds in the analysis code, every workflow action pinned to a commit, no command that fetches searchtrace from the npm registry, and no em or en dashes in any text.
+
+Releasing: bump the version in `package.json`, date the entry in `CHANGELOG.md`, and push a `vX.Y.Z` tag. The release workflow tests that exact commit and attaches the tarball and its `SHA256SUMS` to the GitHub release. If Dependabot moved an action pin in `.github/workflows/`, copy it into `assets/workflow.yml.tmpl` first (a unit test checks they match).
 
 ## Licence
 

@@ -2,7 +2,7 @@
 
 All notable changes to searchtrace are listed here. Versions follow semantic versioning.
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-10-06)
 
 The first release.
 
@@ -30,7 +30,40 @@ The first release.
 ### Commands
 
 - `setup` (wizard and `--yes`), `run` (with `--dry-run`, `--offline`, `--no-paid`, `--budget`, `--wait`, `--ci`, `--json`), `why`, `doctor`, `demo` and `note`.
-- A GitHub Action template, pinned to the exact version, that refuses to run in a public repo and commits explicit paths only.
+- A GitHub Action template that refuses to run in a public repo, commits explicit paths only, builds searchtrace from GitHub at a fixed commit (dependencies pinned by the lockfile, every action pinned to a commit SHA), and keeps your secrets in a read-only job apart from the job that pushes.
+
+### Install and supply chain
+
+- searchtrace is installed from GitHub only: a release tarball attached to each GitHub release, or `npx -y "github:JhontyBarreto/searchtrace#v0.1.0"`, which now builds `dist/` through a `prepare` script. Nothing points at the npm registry name, which isn't ours, and a lint rule keeps it that way. Every hint the CLI prints names the command the way you started it.
+- The Action no longer installs searchtrace from the npm registry by name, commits as GitHub's Actions bot instead of an unregistered account name, starts every run (and every re-run) from the latest saved data, and parks a save it can't push on a `searchtrace-unsaved-*` branch instead of losing it.
+- The cron line the wizard prints calls Node and searchtrace by full path and writes a log, so cron's bare environment can't break it.
+- The crawler's user agent points at this repo, and robots.txt is parsed in linear time (a hostile line used to block for minutes).
+- The crawler refuses a host on your property that resolves to a private address, and any port but the site's own (`crawl.allowPrivateAddresses` for split DNS).
+
+### AI Overview spending
+
+- Checks another data folder already paid for (or a run whose save was lost) are adopted from DataForSEO's task list instead of being posted again.
+- On a busy shared DataForSEO account, the task list is read newest first and capped; a check that can't be confirmed stays reserved and is never re-posted, and is counted as spent once its week ends.
+- An unknown request is only given up after a fresh lookup 15 minutes on, never on a cached answer, and each new attempt gets its own 15 minutes.
+- searchtrace plans with at least $0.0012 a check, learns the real price from recent charges, and sends a 10-check probe first, so a higher price can't overshoot the caps.
+- A task DataForSEO answers with a final error (40102 No Search Results and the like) is settled instead of being fetched every run for 30 days, and `--wait` only waits for this run's checks.
+- Only a real lack of money is reported as a low balance: rate limits, IP whitelists, cost limits and paused accounts get their own messages.
+- A competitor's page title that quotes a private key header no longer sinks a whole batch of paid results.
+
+### Setup and doctor
+
+- The wizard defaults to "Not now" for scheduling unless the folder is at the top of a git repo and the credential is a robot key, never offers GitHub Actions for a personal sign-in, names credentials in plain words, and only suggests deleting a key's original when it sits in Downloads.
+- A plain gcloud sign-in, which can't read Search Console, is recognised up front and gets the right fix ("insufficient authentication scopes" used to say "add yourself as a user").
+- Key paths under your home folder are saved as `~/...`, so a committed `config.json` doesn't carry your username.
+- `doctor --credentials FILE` works (its own fix line suggested it), and `doctor --share` hides your site, robot, project, folders and balance for pasting into a public issue.
+- Setup and doctor say what DataForSEO costs to start ($1 free, then a $50 minimum top-up), and the cost docs give the real monthly figure.
+
+### Robustness
+
+- `searchtrace why` or `note` during a run no longer crashes the run's index load or loads a file twice: index loads take turns, and a run whose index still fails after a retry saves no findings, report or graph built on it.
+- `run --wait` saves the refreshed findings under a fresh name instead of failing on the first run's partition.
+- A first run that fails on the first day of data no longer loses that day for good.
+- Each CI run reads only the first line of old Search Console days, and restores the search index from the Actions cache.
 
 ### Fixed during the real-property verification (6 Oct 2026, sc-domain:seoengico.com)
 

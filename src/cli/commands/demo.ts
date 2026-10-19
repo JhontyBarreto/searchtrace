@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { defaultConfig, writeConfig } from '../../core/config.js';
 import { StError, ExitCode } from '../../core/errors.js';
+import { cli } from '../../core/install.js';
 import { createSecretRegistry } from '../../core/secrets.js';
 import { addDays, fixedClock, ptDayStart } from '../../core/time.js';
 import { writeDemoFixture } from '../../demo/fixture.js';
@@ -67,7 +68,7 @@ export async function demoCommand(args: string[], partial?: Partial<CliDeps>): P
     } else if (summary.reportPath) {
       out(deps, `Report: ${pathToFileURL(summary.reportPath).href}`);
       out(deps, 'It shows every kind of answer once: a Google update, your own change, AI Overviews, normal wobble and not enough data.');
-      out(deps, `Try: npx searchtrace why --dir ${dir}`);
+      out(deps, `Try: ${cli('why')} --dir ${dir}`);
     } else {
       const failed = summary.phases.filter((p) => p.status === 'failed').map((p) => `${p.name}: ${p.errors[0]?.message ?? 'failed'}`);
       deps.stderr.write(`The demo could not build its report.${failed.length ? ` ${failed.join(' ')}` : ''}\n`);

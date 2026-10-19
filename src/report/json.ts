@@ -4,7 +4,11 @@
 // leaves git with nothing to commit. Nothing from the run (ids, times, request counts) goes in.
 import type { AnalysisOutput, Finding, ReportContext, SiteChange } from '../core/types.js';
 import { gscLink } from './gsc-links.js';
-import { BADGE, CAUSE_LABEL, REAL_LABEL, answerSentences, findingAlternatives, findingFalsifier, findingSentence, headlineFinding } from './copy.js';
+import {
+  BADGE, CAUSE_LABEL, answerSentences, findingAlternatives, findingFalsifier, findingSentence, headlineFinding, realLabel, whyText,
+} from './copy.js';
+import { alsoWorthGroups } from './select.js';
+import { alsoWorthSentence } from './stories.js';
 
 /** Rounds to 4 decimals; -0 becomes 0; non-finite numbers become null (JSON has no Infinity). */
 export function round4(x: number): number | null {
@@ -56,8 +60,10 @@ export function findingToJson(f: Finding, property: string): Record<string, unkn
     windows: f.windows,
     date: f.date,
     date_window: f.dateWindow,
-    real: f.real,
-    real_label: REAL_LABEL[f.real],
+    // Findings with reason 'fact' are raw observations (an AI Overview seen, an index state): they
+    // passed no test, so real is null and real_label is "Measured fact", never "Real change".
+    real: f.reason === 'fact' ? null : f.real,
+    real_label: realLabel(f),
     reason: f.reason,
     cause: f.cause,
     cause_label: f.cause ? CAUSE_LABEL[f.cause] : null,
@@ -111,6 +117,11 @@ export function renderFindingsJson(out: AnalysisOutput, ctx: ReportContext): str
   const head = headlineFinding(out);
   const answer = answerSentences(out);
   const real = head?.real ?? out.headline.clicks.real;
+  // The same "Also worth knowing" items the reports show, so the run summary can print them with their unit.
+  const alsoWorth = alsoWorthGroups(out, 3).map((g) => ({
+    finding_id: g.lead.id, unit_label: g.lead.unit.label, real_label: realLabel(g.lead), why: whyText(g.lead), sentence: alsoWorthSentence(g),
+    folded: g.others.map((f) => f.id),
+  }));
   const doc = {
     schema_version: 1,
     generator: 'searchtrace',
@@ -126,8 +137,9 @@ export function renderFindingsJson(out: AnalysisOutput, ctx: ReportContext): str
       sentence: answer.sentence,
       verdict_sentence: answer.verdict,
       real,
-      real_label: REAL_LABEL[real],
+      real_label: realLabel(head ?? out.headline.clicks),
       boring: out.headline.boring,
+      also_worth: alsoWorth,
       clicks: out.headline.clicks,
       impressions: out.headline.impressions,
     },

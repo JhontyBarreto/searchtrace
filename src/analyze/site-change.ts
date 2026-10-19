@@ -647,7 +647,7 @@ function impactFinding(m: Measured, v: VerdictResult, cv: VerdictResult | null, 
       return { pct: fmtPct(c), share: fmtAbsPct(share), yoy_sentence: '', direction: cDirection };
     },
     not_enough_data: () => ({ cpw: fmtCount(m.treatedPreClicks / m.weeks), mde: v.power ? fmtAbsPct(v.power.mde) : 'n/a', weeks: Math.round(m.weeks), pct: fmtPct(tau), impr_sentence: '' }),
-    noise: () => ({ pct: fmtPct(tau), freq: 'rarely' }),
+    noise: () => ({ pct: fmtPct(tau), verdict_reason: v.reason, delta: i.delta, ...(m.boot?.tauCi ? { ci_lo: m.boot.tauCi[0], ci_hi: m.boot.tauCi[1] } : {}) }),
     // check names the identification check that failed; the report words it (6.2 reason_text).
     cant_separate: () => ({
       date, check: v.failed[0]?.name ?? (m.pick?.controls.length ? 'competing_events' : 'coverage'),
@@ -661,8 +661,10 @@ function impactFinding(m: Measured, v: VerdictResult, cv: VerdictResult | null, 
     alternatives.push(update
       ? { cause: 'google_update', ruledOut: false, key: 'update_overlaps', slots: { update: update.title } }
       : { cause: 'google_update', ruledOut: true, key: 'update_no_overlap', slots: {} });
+    // The untouched pages' change speaks to demand only when it is an impressions change: for a
+    // title change it is their click rate, which "impressions held" would mislabel.
     const cCi = m.boot?.cCi;
-    if (c !== null && cCi) {
+    if (c !== null && cCi && m.measure === 'impressions') {
       const flat = cCi[0] <= 0 && cCi[1] >= 0;
       alternatives.push({ cause: 'demand', ruledOut: flat, key: flat ? 'demand_ruled_out' : 'demand_possible', slots: { impr_pct: fmtPct(c) } });
     }

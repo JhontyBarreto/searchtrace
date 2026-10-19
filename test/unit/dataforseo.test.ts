@@ -79,6 +79,39 @@ describe('DataForSEO client', () => {
     expect((e2 as StError).code).toBe('budget');
   });
 
+  it('only calls a real lack of money a low balance, and only a refused login an auth error', async () => {
+    const answer = (status: number, code: number, message: string) => ({ url: /user_data/, reply: { status, body: { status_code: code, status_message: message, tasks: null } }, times: 1 });
+    const ff = fakeFetch([
+      answer(200, 40202, 'The rate-limit per minute has been exceeded.'),
+      answer(200, 40210, 'Insufficient Funds.'),
+      answer(200, 40203, 'Cost limit exceeded.'),
+      answer(200, 40207, 'Your IP is not whitelisted.'),
+      answer(200, 40103, 'Task execution failed.'),
+      answer(200, 40104, 'Please verify your account.'),
+      { method: 'POST', url: /task_post/, reply: { status: 429, body: { status_code: 40202, status_message: 'The rate-limit per minute has been exceeded.', tasks: null } } },
+    ]);
+    const c = createDfsClient({ fetch: ff.fetch, login: 'l', password: 'p-1234567890', secrets: createSecretRegistry({ ci: false }) });
+    const next = async () => (await c.get(PATHS.userData).catch((e: unknown) => e)) as StError & { dfsCode?: number };
+    const rate = await next();
+    expect([rate.code, rate.dfsCode]).toEqual(['http', 40202]);
+    expect(rate.message).toContain('rate-limit');
+    expect((await next()).code).toBe('budget');
+    const limit = await next();
+    expect(limit.code).toBe('budget');
+    expect(limit.fix).toContain('spending limit');
+    const ip = await next();
+    expect([ip.code, ip.dfsCode]).toEqual(['http', 40207]);
+    expect(ip.fix).toContain('Whitelist');
+    expect((await next()).code).toBe('http');
+    const verify = await next();
+    expect(verify.code).toBe('auth');
+    expect(verify.fix).toContain('Verify your account');
+    // A 429 carrying 40202 on task_post keeps DataForSEO's code, so the intents are failed (sent again later), not 'budget'.
+    const throttled = (await c.post(PATHS.taskPost, [], { idempotent: false }).catch((e: unknown) => e)) as StError & { dfsCode?: number };
+    expect([throttled.code, throttled.dfsCode]).toEqual(['http', 40202]);
+    expect(throttled.message).toContain('429');
+  });
+
   it('never retries a non-idempotent POST', async () => {
     const ff = fakeFetch([{ method: 'POST', url: /task_post/, reply: { status: 503, body: 'busy' } }]);
     const c = createDfsClient({ fetch: ff.fetch, login: 'l', password: 'p-1234567890', secrets: createSecretRegistry({ ci: false }) });

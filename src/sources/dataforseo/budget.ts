@@ -28,6 +28,18 @@ export interface BudgetResult {
 
 const EPS = 1e-9;
 
+/**
+ * The lowest price per check searchtrace ever plans with: DataForSEO's live SERP with AI Overview
+ * costs $0.0012. A config.json that says less (the price without AI Overview, or a typo) would let a
+ * "hard" cap overspend by the ratio, so the configured price is a floor raised to this, never lowered.
+ */
+export const MIN_COST_PER_CHECK = 0.0012;
+
+/** The price to plan with: the configured one, never below MIN_COST_PER_CHECK. */
+export function planningPrice(configuredUsd: number): number {
+  return Number.isFinite(configuredUsd) && configuredUsd > MIN_COST_PER_CHECK ? configuredUsd : MIN_COST_PER_CHECK;
+}
+
 function finiteOr(x: number, fallback: number): number {
   return Number.isFinite(x) ? x : fallback;
 }

@@ -40,21 +40,26 @@ describe('decideVerdict (test 19)', () => {
     expect(decideVerdict({ ...base, identification: [passed] }).verdict).toBe('signal');
   });
 
-  it('rule 3: signal when the CI excludes 0, the effect is at least delta and q <= fdrQ', () => {
+  it('rule 3: signal when the CI excludes 0, q <= fdrQ and the range reaches past delta', () => {
     const r = decideVerdict(base);
     expect(r).toEqual({ verdict: 'signal', reason: 'signal', power: null, failed: [] });
     // Positive direction, effect exactly at delta, q exactly at fdrQ.
     expect(decideVerdict({ ...base, estimate: 0.1, ci95: [0.02, 0.2], q: 0.1 }).verdict).toBe('signal');
+    // The estimate is below delta but the range reaches past it: real, of uncertain size, not wobble.
+    // (This was "noise_small" before: a -20% page change with a range of -28% to -11% read as wobble.)
+    expect(decideVerdict({ ...base, estimate: -0.08, ci95: [-0.12, -0.04], q: 0.001 })).toEqual({ verdict: 'signal', reason: 'signal', power: null, failed: [] });
   });
 
-  it('rule 4: bounded noise when the whole CI sits inside (-delta, delta)', () => {
+  it('rule 4: real but small when the CI excludes 0, passes FDR and sits inside (-delta, delta)', () => {
+    const r = decideVerdict({ ...base, estimate: -0.06, ci95: [-0.09, -0.03], q: 0.01 });
+    expect(r).toEqual({ verdict: 'noise', reason: 'noise_small', power: null, failed: [] });
+  });
+
+  it('rule 5: bounded noise when the whole CI sits inside (-delta, delta) and it is not shown to be real', () => {
     const r = decideVerdict({ ...base, estimate: 0.01, ci95: [-0.06, 0.08], q: 0.7 });
     expect(r).toEqual({ verdict: 'noise', reason: 'noise_bounded', power: null, failed: [] });
-  });
-
-  it('rule 5: real but small when the CI excludes 0 and the effect is below delta', () => {
-    const r = decideVerdict({ ...base, estimate: -0.08, ci95: [-0.12, -0.04], q: 0.001 });
-    expect(r).toEqual({ verdict: 'noise', reason: 'noise_small', power: null, failed: [] });
+    // The CI excludes 0 but the change fails false-discovery control: never called real, and bounded.
+    expect(decideVerdict({ ...base, estimate: -0.06, ci95: [-0.09, -0.03], q: 0.3 }).reason).toBe('noise_bounded');
   });
 
   it('rule 6: a wide CI gives underpowered with power', () => {
@@ -64,12 +69,14 @@ describe('decideVerdict (test 19)', () => {
     expect(r.power).not.toBeNull();
   });
 
-  it('a large effect whose q is above fdrQ is underpowered, not signal', () => {
+  it('a large effect whose q is above fdrQ is underpowered, not signal or small', () => {
     const r = decideVerdict({ ...base, q: 0.2 });
     expect(r.verdict).toBe('underpowered');
     expect(r.reason).toBe('wide_ci');
     // A missing q counts as 1.
     expect(decideVerdict({ ...base, q: null }).verdict).toBe('underpowered');
+    // A range that excludes 0 and reaches past delta but fails FDR is not real either.
+    expect(decideVerdict({ ...base, estimate: -0.08, ci95: [-0.12, -0.04], q: 0.2 }).reason).toBe('wide_ci');
   });
 
   it('without a CI it is underpowered, with power from the counts when given', () => {

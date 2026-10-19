@@ -11,6 +11,7 @@
 // - observedAt: result.datetime as a UTC ISO instant.
 import { z } from 'zod';
 import { StError } from '../../core/errors.js';
+import { defangUntrusted } from '../../core/secrets.js';
 import { domainMatches } from '../../core/url.js';
 import type { AioRef, Device, SampleDesignKind, SerpObservation } from '../../core/types.js';
 import { parseDfsDatetime } from './client.js';
@@ -47,10 +48,15 @@ export function stripWww(domain: string): string {
   return d.startsWith('www.') ? d.slice(4) : d;
 }
 
+/** Collapsed, capped and defanged: this text comes from other people's pages (see defangUntrusted). */
 function clip(s: string | null | undefined, n = MAX_TEXT): string | null {
   if (typeof s !== 'string') return null;
-  const t = s.replace(/\s+/g, ' ').trim();
+  const t = defangUntrusted(s.replace(/\s+/g, ' ').trim());
   return t.length > n ? t.slice(0, n) : t;
+}
+
+function cleanUrl(url: string): string {
+  return defangUntrusted(url.slice(0, 2000));
 }
 
 function hostOf(url: string): string | null {
@@ -91,7 +97,7 @@ export function collectRefs(node: unknown): AioRef[] {
           seen.add(url);
           out.push({
             domain: domain.trim().toLowerCase(),
-            url: url.slice(0, 2000),
+            url: cleanUrl(url),
             title: clip(typeof ref.title === 'string' ? ref.title : null),
             source: clip(typeof ref.source === 'string' ? ref.source : null, 200),
           });
@@ -159,7 +165,7 @@ export function normalizeSerp(
     organic.push({
       rankAbsolute: it.data.rank_absolute ?? it.data.rank_group ?? organic.length + 1,
       domain,
-      url: url.slice(0, 2000),
+      url: cleanUrl(url),
       title: clip(it.data.title) ?? '',
     });
   }

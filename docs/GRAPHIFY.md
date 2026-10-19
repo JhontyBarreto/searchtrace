@@ -78,6 +78,13 @@ Every node has `id`, `label`, `file_type`, `source_file` (the stored file it cam
 `file_type` is `document` for pages, `rationale` for findings, site changes and Google updates, and
 `concept` for the rest.
 
+On `finding` nodes, `real` is the verdict (`signal`, `noise`, `underpowered`, `unclear`) and
+`real_label` its words: Real change, Small change (real, but smaller than the size worth acting on),
+Normal wobble, Not enough data yet, Can't separate the causes. A raw observation, such as an AI
+Overview seen on a search or a page's index state, passed no test: its `real` is null and its
+`real_label` is Measured fact, so a question like "which real changes..." never picks up sightings.
+`findings.json` uses the same rule.
+
 ## How things connect
 
 There is one link per pair of nodes. Every link has `relation`, `confidence` (`EXTRACTED` = measured,

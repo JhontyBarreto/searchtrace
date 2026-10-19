@@ -16,10 +16,12 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { StError } from '../../core/errors.js';
+import { cli, docUrl } from '../../core/install.js';
 import type { Config, Fetch, GoogleAuth, HttpRequest, SecretRegistry } from '../../core/types.js';
 import { requestJson } from '../../http/request.js';
 
 export const READONLY_SCOPE = 'https://www.googleapis.com/auth/webmasters.readonly';
+const WRITE_SCOPE = 'https://www.googleapis.com/auth/webmasters';
 export const DEFAULT_TOKEN_URI = 'https://oauth2.googleapis.com/token';
 export const SITES_URL = 'https://searchconsole.googleapis.com/webmasters/v3/sites';
 
@@ -33,7 +35,18 @@ export const REAUTH_FIX = [
   'or point searchtrace at a service-account key with --credentials.',
 ].join('\n');
 
-const MISSING_FIX = 'Run `npx searchtrace setup`, or pass --credentials <file>.';
+const MISSING_FIX = `Run \`${cli('setup')}\`, or pass --credentials <file>.`;
+const DOCTOR_FIX = `Run \`${cli('doctor')}\` to check the credential.`;
+
+/** gcloud's own OAuth client: a plain `gcloud auth application-default login` uses it, and it can't be granted Search Console. */
+export const GCLOUD_DEFAULT_CLIENT_ID = '764086051850-6qr4p6gpi6hn506pt8ejuq83di341hur.apps.googleusercontent.com';
+
+export const SCOPE_FIX = [
+  "This Google sign-in doesn't include Search Console access, and gcloud's own sign-in can't get it. Either use a robot account",
+  `(\`${cli('setup')}\`, option 1), or sign in with your own OAuth client (${docUrl('SETUP.md')}, option 2):`,
+  '  gcloud auth application-default login --client-id-file=<your OAuth client json> \\',
+  '    --scopes=https://www.googleapis.com/auth/webmasters.readonly,https://www.googleapis.com/auth/cloud-platform',
+].join('\n');
 
 /** The GoogleAuth this module returns: source and invalidate (optional in the contract) are always set. */
 export interface LoadedGoogleAuth extends GoogleAuth {
@@ -278,13 +291,15 @@ function tokenError(status: number, data: TokenResponse | null, cred: Credential
       `Google rejected the saved credential (${detail}).`,
       cred.kind === 'service_account'
         ? "Check that the service-account key still exists in Google Cloud and that this computer's clock is right."
-        : 'Sign in again with `gcloud auth application-default login`, or use a service-account key with --credentials.',
+        : 'Sign in again with your own OAuth client (gcloud auth application-default login --client-id-file=<your OAuth client json> ' +
+          '--scopes=https://www.googleapis.com/auth/webmasters.readonly,https://www.googleapis.com/auth/cloud-platform). ' +
+          'An External OAuth app left in Testing expires sign-ins after 7 days; a robot key does not. Or use a service-account key with --credentials.',
     );
   }
   if (code === 'invalid_client' || code === 'unauthorized_client') {
     return new StError('auth', `Google rejected the OAuth client in this credential (${detail}).`, 'Create the credential again, or use a service-account key with --credentials.');
   }
-  return new StError('auth', `Google would not issue an access token (${detail}).`, 'Run `npx searchtrace doctor` to check the credential.');
+  return new StError('auth', `Google would not issue an access token (${detail}).`, DOCTOR_FIX);
 }
 
 function tokenRequest(cred: Credential, nowSeconds: number): { url: string; body: string } {
@@ -337,7 +352,14 @@ function createAuth(cred: Credential, o: { fetch: Fetch; secrets: SecretRegistry
     o.secrets.add(access);
     const ttl = typeof data?.expires_in === 'number' && data.expires_in > 0 ? data.expires_in : 3600;
     token = { value: access, expiresAt: Date.now() + ttl * 1000 };
-    if (typeof data?.scope === 'string' && data.scope.trim() !== '') scopes = data.scope.trim().split(/\s+/).sort();
+    if (typeof data?.scope === 'string' && data.scope.trim() !== '') {
+      scopes = data.scope.trim().split(/\s+/).sort();
+      // A plain gcloud ADC login grants cloud-platform but never Search Console: say so now, not as a 403 later.
+      if (cred.kind === 'authorized_user' && !scopes.some((x) => x === READONLY_SCOPE || x === WRITE_SCOPE)) {
+        token = null;
+        throw new StError('auth', `This Google sign-in (${cred.account ?? 'user credential'}) was not granted Search Console access.`, SCOPE_FIX);
+      }
+    }
     return access;
   };
 
@@ -426,13 +448,18 @@ function googleMessage(data: unknown): { message: string; reasons: string[]; act
   return { message, reasons, activationUrl };
 }
 
+/** A 403 because the token lacks the Search Console scope (a plain gcloud ADC login), not because of property access. */
+function isScopeError(g: { message: string; reasons: string[] }): boolean {
+  return g.reasons.includes('ACCESS_TOKEN_SCOPE_INSUFFICIENT') || /insufficient authentication scopes/i.test(g.message);
+}
+
 /** Maps a Google API error response to an StError with a one-line fix (spec 4.7 and 6.4.4). */
 export function mapGoogleError(status: number, data: unknown, auth: Pick<GoogleAuth, 'principal'>, c: GoogleCallContext): StError {
   const g = googleMessage(data);
   const said = g.message ? ` Google said: ${g.message}` : '';
   const property = c.property ?? 'this property';
   if (status === 401) {
-    return new StError('auth', `Google did not accept the credential for ${auth.principal} (${c.what}).${said}`, 'Run `npx searchtrace doctor` to check the credential.');
+    return new StError('auth', `Google did not accept the credential for ${auth.principal} (${c.what}).${said}`, DOCTOR_FIX);
   }
   if (status === 403) {
     const disabled = g.reasons.some((r) => r === 'SERVICE_DISABLED' || r === 'accessNotConfigured') || /has not been used|is disabled/i.test(g.message);
@@ -442,6 +469,9 @@ export function mapGoogleError(status: number, data: unknown, auth: Pick<GoogleA
         `The Search Console API is turned off for this credential's Google Cloud project.${said}`,
         g.activationUrl ?? 'Turn on the Google Search Console API in your Google Cloud project, then run again.',
       );
+    }
+    if (isScopeError(g)) {
+      return new StError('auth', `This credential (${auth.principal}) was not granted Search Console access (${c.what}).${said}`, SCOPE_FIX);
     }
     return new StError(
       'permission',
@@ -453,7 +483,7 @@ export function mapGoogleError(status: number, data: unknown, auth: Pick<GoogleA
     return new StError(
       'property_not_found',
       `Search Console has no property ${property} that ${auth.principal} can see.${said}`,
-      'Check the property name with `npx searchtrace doctor`. Domain properties look like sc-domain:example.com; URL-prefix properties end with a slash.',
+      `Check the property name with \`${cli('doctor')}\`. Domain properties look like sc-domain:example.com; URL-prefix properties end with a slash.`,
     );
   }
   if (status === 429) return new StError('quota', `Search Console is rate limiting requests (${c.what}).${said}`);

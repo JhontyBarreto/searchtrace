@@ -10,16 +10,22 @@ describe('why', () => {
     const s = renderWhy(out, null, { color: false });
     const lines = s.split('\n');
     expect(lines[0]).toBe('sc-domain:example.com · last 28 days vs the 28 before');
-    expect(s).toContain('  Not enough data yet · Why: Unclear · Possible');
+    // No "Why: Unclear · Possible" next to "Not enough data yet": a bare badge on no cause reads as a contradiction.
+    expect(lines[2]).toBe('  Not enough data yet');
+    expect(s).not.toContain('Why: Unclear');
     expect(s).toContain('In the last 28 days Google sent you 80 clicks');
     expect(s).toContain('  Where the clicks went (estimated, 95% range)');
-    expect(s).toMatch(/ {4}Fewer or more searches +-3 {4}\(-8 to \+2\)/);
-    expect(s).toContain('    Unattributed searches');
+    expect(s).toMatch(/ {4}More or fewer searches +-3 {4}\(-8 to \+2\)/);
+    // A Total row with the answer's own range, and the hidden-search note instead of a bare label.
+    expect(s).toMatch(/ {4}Total +-9 {4}\(-30 to \+12\)/);
+    expect(s).toContain("Google doesn't name the searches behind 81% of your clicks");
     expect(s).toContain('  Evidence');
-    expect(s).toContain('    Measured   Search Console: 80 clicks');
+    // What was measured, without file paths (they live in --json and Show the maths).
+    expect(s).toContain('    Measured   Search Console: 80 clicks, 19,030 impressions');
+    expect(s).not.toContain('gsc/2026/10/2026-10-03.ndjson.gz');
     expect(s).toContain('  Other explanations');
     expect(s).toContain("Your change: can't rule it out, nothing was recorded on your site then.");
-    expect(s).toContain("What would prove this wrong: we'll know more by 31 Oct 2026.");
+    expect(s).toContain("When we'll know: by 31 Oct 2026.");
     expect(s).toContain('  Check it yourself: https://search.google.com/search-console/');
     expect(s).not.toContain('\u001b[');
   });

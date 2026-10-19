@@ -16,6 +16,15 @@ const PRIVATE_KEY_MARKER = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/;
 const BEARER = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g;
 const GOOGLE_ACCESS_TOKEN = /\bya29\.[A-Za-z0-9._-]{8,}/g;
 
+/**
+ * Third-party text (a competitor's page title in a SERP) that quotes a PEM header would trip the
+ * store's key guard and sink a whole partition. Rewriting the marker keeps the text readable while
+ * the stored line no longer looks like a key. assertNoSecret itself is never relaxed.
+ */
+export function defangUntrusted(s: string): string {
+  return s.replace(/-----(BEGIN|END) ([A-Z0-9 ]*PRIVATE KEY)-----/g, '[$1 $2]');
+}
+
 /** GitHub workflow command data escaping. */
 function escapeCommandData(s: string): string {
   return s.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');

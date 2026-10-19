@@ -5,6 +5,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { StError } from './errors.js';
+import { cli } from './install.js';
 
 const SECRET_LIKE = [/-----BEGIN/, /"private_key"/, /^[A-Za-z0-9+/=_-]{40,}$/];
 const noSecrets = (v: unknown): boolean =>
@@ -38,6 +39,8 @@ export const ConfigSchema = z.object({
     timeoutMs: z.number().int().default(15000),
     maxBytes: z.number().int().default(5_000_000),
     minHoursBetween: z.number().min(1).default(20),
+    // Fetch pages even when your own domain resolves to a private address (split DNS, a hosts-file entry).
+    allowPrivateAddresses: z.boolean().default(false),
   }).prefault({}),
   serp: z.discriminatedUnion('provider', [
     z.object({ provider: z.literal('none') }),
@@ -47,7 +50,7 @@ export const ConfigSchema = z.object({
       passwordEnv: z.string().default('DATAFORSEO_PASSWORD'),
       monthlyBudgetUsd: z.number().min(0).max(100).default(1),
       maxPerRunUsd: z.number().min(0).max(100).default(0.3),
-      costPerCheckUsd: z.number().default(0.0012),              // worst case; actual cost read back from id_list
+      costPerCheckUsd: z.number().positive().default(0.0012),   // planning price, never below $0.0012 (budget.ts)
       locationCode: z.number().int().optional(),                // default: top GSC country by impressions, 28 days
       languageCode: z.string().optional(),                      // default from assets/country-locations.json
     }),
@@ -72,7 +75,7 @@ export const ConfigSchema = z.object({
 export type Config = z.infer<typeof ConfigSchema>;
 
 const CONFIG_FILE = 'config.json';
-const SETUP_FIX = 'Run `npx searchtrace setup` to create one, or pass --dir to point at your searchtrace-data folder.';
+const SETUP_FIX = `Run \`${cli('setup')}\` to create one, or pass --dir to point at your searchtrace-data folder.`;
 const PROPERTY_FIX =
   'Use sc-domain:example.com for a Domain property, or the full URL with a trailing slash (https://www.example.com/) for a URL-prefix property.';
 
@@ -125,7 +128,7 @@ export async function loadConfig(dir: string): Promise<Config> {
     throw new StError(
       'config',
       `${file} is not valid JSON: ${(e as Error).message}`,
-      'Fix the JSON in that file, or run `npx searchtrace setup` to write a fresh one.',
+      `Fix the JSON in that file, or run \`${cli('setup')}\` to write a fresh one.`,
       { cause: e },
     );
   }
@@ -134,7 +137,7 @@ export async function loadConfig(dir: string): Promise<Config> {
     throw new StError(
       'config',
       `${file} has problems: ${describeIssues(parsed.error.issues)}`,
-      `Fix those values in ${file}, or run \`npx searchtrace setup\` again.`,
+      `Fix those values in ${file}, or run \`${cli('setup')}\` again.`,
     );
   }
   return parsed.data;

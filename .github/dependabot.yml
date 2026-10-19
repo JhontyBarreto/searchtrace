@@ -1,0 +1,8 @@
+# Keeps the SHA pins in this repo's own workflows current. The workflow template that setup writes
+# into users' repos (assets/workflow.yml.tmpl) uses the same pins; a unit test fails until it matches.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

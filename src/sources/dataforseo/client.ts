@@ -23,7 +23,11 @@ export const PATHS = {
 } as const;
 
 export const AUTH_FIX = 'Check DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD (or the variables named in serp.loginEnv and serp.passwordEnv).';
-export const BUDGET_FIX = 'Top up your DataForSEO balance, or lower serp.monthlyBudgetUsd.';
+export const BUDGET_FIX = 'Top up your DataForSEO balance (their smallest top-up is $50, and it never expires), or lower serp.monthlyBudgetUsd.';
+export const COST_LIMIT_FIX = "Raise the spending limit at app.dataforseo.com/api-settings, or wait for it to reset. Topping up the balance won't help.";
+export const VERIFY_FIX = 'Verify your account at app.dataforseo.com (DataForSEO asks for this before the API works), then run again.';
+export const IP_FIX = "Whitelist this machine's IP address at app.dataforseo.com/api-settings, or turn IP whitelisting off. GitHub Actions runners change IP every run.";
+export const PAUSED_FIX = 'The DataForSEO account is paused. Contact DataForSEO support.';
 
 const TaskSchema = z.looseObject({
   id: z.string().optional(),
@@ -96,14 +100,29 @@ function budgetError(): StError {
   return new StError('budget', 'DataForSEO says the account balance is too low.', BUDGET_FIX);
 }
 
-/** Maps an HTTP status and envelope to an error, or returns the parsed envelope. */
+/**
+ * Maps an HTTP status and envelope to an error, or returns the parsed envelope. Only a real lack
+ * of money is 'budget' and only a refused login is 'auth': DataForSEO's 401xx and 402xx ranges
+ * also hold rate limits, IP whitelists, paused accounts and task errors, and those keep their own
+ * message (and so stay 'http', which marks posted intents failed and eligible again).
+ */
 function checkEnvelope(status: number, data: unknown, label: string): DfsEnvelope {
   const parsed = EnvelopeSchema.safeParse(data);
   const code = parsed.success ? parsed.data.status_code : null;
-  if (status === 401 || status === 403 || (code !== null && code >= 40100 && code < 40200)) throw authError();
-  if (status === 402 || (code !== null && code >= 40200 && code < 40300)) throw budgetError();
+  const msg = parsed.success ? (parsed.data.status_message ?? '').slice(0, 200) : '';
+  const said = msg ? ` (${msg})` : '';
+  const refused = (fix: string): StError =>
+    Object.assign(new StError('http', `DataForSEO ${label} answered ${code}${said}.`, fix), { status, dfsCode: code ?? undefined });
+  if (code === 40104) throw new StError('auth', 'DataForSEO says this account has to be verified first.', VERIFY_FIX);
+  if (code === 40207) throw refused(IP_FIX);
+  if (code === 40201) throw refused(PAUSED_FIX);
+  if (status === 402 || code === 40200 || code === 40210) throw budgetError();
+  if (code === 40203) throw new StError('budget', "DataForSEO's own spending limit for this account was reached.", COST_LIMIT_FIX);
+  if (status === 401 || code === 40100 || (status === 403 && (code === null || code < 40000))) throw authError();
   if (status < 200 || status >= 300) {
-    throw Object.assign(new StError('http', `DataForSEO ${label} returned HTTP ${status}.`), { status });
+    throw Object.assign(new StError('http', `DataForSEO ${label} returned HTTP ${status}${code !== null && code !== 20000 ? ` (${code}${msg ? ` ${msg}` : ''})` : ''}.`), {
+      status, ...(code !== null && code !== 20000 ? { dfsCode: code } : {}),
+    });
   }
   if (!parsed.success) throw Object.assign(new StError('http', `DataForSEO ${label} sent an unexpected response.`), { status });
   if (parsed.data.status_code !== 20000) {

@@ -204,6 +204,8 @@ describe('inspectionCollector', () => {
     expect(res.status).toBe('failed');
     expect(res.errors[0].code).toBe('permission');
     expect(res.errors[0].message).toContain(`Give ${google.principal} Full permission on ${PROPERTY} in Search Console`);
+    // Someone who can't get Full (an agency with Restricted access) is told how to stop the daily failure.
+    expect(res.errors[0].message).toContain('"inspection": {"enabled": false}');
     expect(res.partitions).toEqual([]);
   });
 

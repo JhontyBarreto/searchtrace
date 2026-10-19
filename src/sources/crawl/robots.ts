@@ -93,10 +93,14 @@ export function parseRobots(text: string, userAgent: string): RobotsRules {
     const hash = raw.indexOf('#');
     const line = (hash >= 0 ? raw.slice(0, hash) : raw).trim();
     if (line === '') continue;
-    const m = /^([A-Za-z][A-Za-z_ -]*?)\s*:\s*(.*)$/.exec(line);
-    if (!m) continue;
-    const field = m[1].toLowerCase().replace(/[\s_]+/g, '-');
-    const value = m[2].trim();
+    // Split on the first colon. (A single regex with a lazy field and \s* both matching spaces
+    // backtracked quadratically: one hostile 500 KiB line took minutes.)
+    const colon = line.indexOf(':');
+    if (colon < 1) continue;
+    const rawField = line.slice(0, colon).trim();
+    if (!/^[A-Za-z][A-Za-z_ -]*$/.test(rawField)) continue;
+    const field = rawField.toLowerCase().replace(/[\s_]+/g, '-');
+    const value = line.slice(colon + 1).trim();
     if (field === 'user-agent' || field === 'useragent') {
       if (!current || !lastWasAgent) {
         current = { agents: [], allow: [], disallow: [], crawlDelay: null };

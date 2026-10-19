@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { ExitCode } from '../core/errors.js';
-import { toolVersion } from '../pipeline/context.js';
+import { REPO_URL, toolVersion } from '../core/install.js';
 import { demoCommand } from './commands/demo.js';
 import { doctorCommand } from './commands/doctor.js';
 import { noteCommand } from './commands/note.js';
@@ -34,7 +34,7 @@ Usage
   searchtrace run                 collect, analyse, and write the report and graph
   searchtrace why [TARGET]        explain a change: a page path or URL, "search words", a date, or a finding id (alias: explain)
   searchtrace doctor              check the setup, with a one-line fix for anything wrong
-  searchtrace demo                build a report for a made-up site, offline, in about 30 seconds
+  searchtrace demo                build a report for a made-up site, offline, in under 30 seconds
   searchtrace note "TEXT"         record a change you made: --date YYYY-MM-DD --urls "/blog/*"
 
 Common flags
@@ -48,8 +48,15 @@ run flags
 setup flags
   --property P  --credentials FILE  --dataforseo  --monthly-budget USD  --max-per-run USD  --github  --yes
 
+doctor flags
+  --credentials FILE              check this key file instead of the configured one
+  --share                         hide your site, robot email, folders and balance, for pasting into a public issue
+
+demo flags
+  --out DIR                       keep the demo data in this empty folder (default: a temporary folder)
+
 Exit codes: 0 ok, 1 internal error, 2 config, 3 auth or permission, 4 partial (a step failed, the report was still written).
-Docs: https://github.com/JhontyBarreto/searchtrace#readme
+Docs: ${REPO_URL}#readme
 `;
 
 /** The --dir value from loosely parsed args, for routing a bare `searchtrace`. */

@@ -6,6 +6,7 @@
 // the pages searchtrace already knows (Search Console and crawl). Every URL must be on the property.
 import { loadConfig } from '../../core/config.js';
 import { StError } from '../../core/errors.js';
+import { cli } from '../../core/install.js';
 import { createSecretRegistry } from '../../core/secrets.js';
 import { isIsoDate } from '../../core/time.js';
 import { defaultOrigins, isOnProperty, normalizeUrl, pathOf } from '../../core/url.js';
@@ -37,7 +38,7 @@ export function resolveNoteUrls(spec: string, o: { property: string; origin: str
       const hits = o.known.filter((u) => re.test(absolute ? u : pathOf(u)));
       if (!hits.length) {
         throw new StError('config', `No known pages match "${item}".`,
-          'Run `npx searchtrace run` first so searchtrace knows your pages, or list the URLs with commas.');
+          `Run \`${cli('run')}\` first so searchtrace knows your pages, or list the URLs with commas.`);
       }
       for (const h of hits) found.add(h);
       continue;
@@ -65,7 +66,7 @@ export async function noteCommand(args: string[], partial?: Partial<CliDeps>): P
       dir: { type: 'string' }, date: { type: 'string' }, urls: { type: 'string' }, field: { type: 'string' },
     }, 'note');
     const text = positionals.join(' ').trim();
-    if (!text) throw new StError('config', 'Say what changed.', 'For example: searchtrace note "New title template on blog posts" --date 2026-09-09 --urls "/blog/*"');
+    if (!text) throw new StError('config', 'Say what changed.', `For example: ${cli('note "New title template on blog posts" --date 2026-09-09 --urls "/blog/*"')}`);
     if (text.length > MAX_TEXT) throw new StError('config', `Keep the note under ${MAX_TEXT} characters.`, 'Shorten the text and try again.');
     if (!v.date || !isIsoDate(v.date)) throw new StError('config', 'Give the date of the change as --date YYYY-MM-DD.', 'For example: --date 2026-09-09');
     if (!v.urls) throw new StError('config', 'Say which pages changed with --urls.', 'For example: --urls "/blog/*" or --urls "/pricing,/about"');

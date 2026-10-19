@@ -26,7 +26,7 @@ const m = vi.hoisted(() => {
   });
   const collector = (name: string) => ({
     name,
-    plan: vi.fn(async () => ({ lines: [{ group: 'free', label: name, detail: `${name} plan` }], estRequests: 1, estUsd: 0, payload: { pendingTaskIds: [] as string[] }, skip: null })),
+    plan: vi.fn(async () => ({ lines: [{ group: 'free', label: name, detail: `${name} plan` }], estRequests: 1, estUsd: 0, payload: { pendingTaskIds: [] as string[] } as { pendingTaskIds: string[]; thisRunTaskIds?: string[] }, skip: null })),
     execute: vi.fn(async () => ok(name, { notes: [`${name} done`], requests: { [`${name}.call`]: 2 } })),
   });
   return {
@@ -229,6 +229,65 @@ describe('runPipeline', () => {
     expect(m.serpCollect.execute.mock.calls.length - collectsBefore).toBe(2);
     for (const name of ['serp_collect', 'analyze', 'report', 'graph']) expect(s.phases.filter((p) => p.name === name)).toHaveLength(1);
     expect(s.phases.find((p) => p.name === 'serp_collect')?.notes).toContain('Collected 0 AI Overview checks while waiting.');
+  });
+
+  it('saves the findings again after --wait when the collected results change them, under a fresh name', async () => {
+    await seeded();
+    const cfg = defaultConfig('sc-domain:example.com');
+    await writeConfig(dir, { ...cfg, serp: { provider: 'dataforseo', loginEnv: 'L', passwordEnv: 'P', monthlyBudgetUsd: 1, maxPerRunUsd: 0.3, costPerCheckUsd: 0.0012 } });
+    let t = Date.parse('2026-10-06T06:17:00Z');
+    const clock = { now: () => new Date(t) };
+    const sleep = vi.fn(async (ms: number) => {
+      t += ms;
+    });
+    const first = makeAnalysisOutput();
+    const after = makeAnalysisOutput();
+    after.findings = after.findings.slice(1);
+    m.analysis.mockReturnValueOnce(first).mockReturnValueOnce(after);
+    const seededFindings = (await files('findings/')).length;
+    m.serpCollect.plan
+      .mockResolvedValueOnce({ lines: [], estRequests: 0, estUsd: 0, payload: { pendingTaskIds: [] }, skip: null })
+      .mockResolvedValueOnce({ lines: [], estRequests: 1, estUsd: 0, payload: { pendingTaskIds: ['t1'], thisRunTaskIds: ['t1'] }, skip: null })
+      .mockResolvedValueOnce({ lines: [], estRequests: 0, estUsd: 0, payload: { pendingTaskIds: [], thisRunTaskIds: [] }, skip: null });
+    const s = await runPipeline({ dir, flags: flags({ waitMinutes: 2 }), clock, env: {}, quiet: true, sleep });
+    expect(s.exit).toBe('ok');
+    expect(s.phases.find((p) => p.name === 'analyze')?.status).toBe('ok');
+    const saved = await files('findings/');
+    expect(saved).toHaveLength(seededFindings + 2);
+    // The later name sorts last, so it replays last into the history.
+    const store = await openStore(dir, createSecretRegistry({ ci: false }));
+    expect((await store.readPartition(saved[saved.length - 1])).rows).toHaveLength(after.findings.length);
+    expect((await store.readPartition(saved[saved.length - 2])).rows).toHaveLength(first.findings.length);
+  });
+
+  it('writes one findings partition when the analysis after --wait is unchanged', async () => {
+    await seeded();
+    const cfg = defaultConfig('sc-domain:example.com');
+    await writeConfig(dir, { ...cfg, serp: { provider: 'dataforseo', loginEnv: 'L', passwordEnv: 'P', monthlyBudgetUsd: 1, maxPerRunUsd: 0.3, costPerCheckUsd: 0.0012 } });
+    m.serpCollect.plan
+      .mockResolvedValueOnce({ lines: [], estRequests: 0, estUsd: 0, payload: { pendingTaskIds: [] }, skip: null })
+      .mockResolvedValueOnce({ lines: [], estRequests: 1, estUsd: 0, payload: { pendingTaskIds: ['t1'], thisRunTaskIds: ['t1'] }, skip: null })
+      .mockResolvedValueOnce({ lines: [], estRequests: 0, estUsd: 0, payload: { pendingTaskIds: [], thisRunTaskIds: [] }, skip: null });
+    const seededFindings = (await files('findings/')).length;
+    const s = await run({ waitMinutes: 2 }, { sleep: vi.fn(async () => undefined) });
+    expect(s.exit).toBe('ok');
+    expect(await files('findings/')).toHaveLength(seededFindings + 1);
+  });
+
+  it('stops waiting at once when only an older run\'s task is still pending', async () => {
+    await seeded();
+    const cfg = defaultConfig('sc-domain:example.com');
+    await writeConfig(dir, { ...cfg, serp: { provider: 'dataforseo', loginEnv: 'L', passwordEnv: 'P', monthlyBudgetUsd: 1, maxPerRunUsd: 0.3, costPerCheckUsd: 0.0012 } });
+    m.serpCollect.plan
+      .mockResolvedValueOnce({ lines: [], estRequests: 0, estUsd: 0, payload: { pendingTaskIds: ['old'] }, skip: null })
+      .mockResolvedValue({ lines: [], estRequests: 1, estUsd: 0, payload: { pendingTaskIds: ['old'], thisRunTaskIds: [] }, skip: null });
+    const sleep = vi.fn(async () => undefined);
+    const before = m.serpCollect.execute.mock.calls.length;
+    await run({ waitMinutes: 20 }, { sleep });
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(m.serpCollect.execute.mock.calls.length - before).toBe(1);
+    m.serpCollect.plan.mockReset();
+    m.serpCollect.plan.mockImplementation(async () => ({ lines: [], estRequests: 1, estUsd: 0, payload: { pendingTaskIds: [] as string[] }, skip: null }));
   });
 
   it('merges --wait polls into one step that says what is still outstanding', () => {

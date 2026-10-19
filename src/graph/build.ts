@@ -12,7 +12,7 @@ import { domainMatches, pathOf } from '../core/url.js';
 import type {
   Cause, Confidence, Finding, GEdge, GNode, GoogleEvent, GraphDoc, GraphInput, InspectionRecord, IsoDate, NodeKind, SerpObservation, SiteChange,
 } from '../core/types.js';
-import { CAUSE_LABEL, REAL_LABEL } from '../report/copy.js';
+import { CAUSE_LABEL, realLabel } from '../report/copy.js';
 import { carryForward } from './merge.js';
 import {
   CONFIG_FILE, ANNOTATIONS_FILE, FIELD_LABEL, FILE_TYPE_OF, NODE_ID_PATTERN, type PartitionIndex, type Relation, eventRange, fmtDay,
@@ -488,7 +488,9 @@ export function buildGraph(i: GraphInput): GraphDoc {
     }
     const src = monthOfDay('findings', firstReported);
     const fid = g.node('finding', f.id, label, src, {
-      finding_id: f.id, kind: f.kind, real: f.real, real_label: REAL_LABEL[f.real] ?? f.real, cause: f.cause,
+      // A raw observation (reason fact) passed no test: real is null and the label says it was measured,
+      // so graph queries filtering on "Real change" only ever get tested changes.
+      finding_id: f.id, kind: f.kind, real: f.reason === 'fact' ? null : f.real, real_label: realLabel(f), cause: f.cause,
       confidence: f.causeConfidence, estimate: num(f.effect.estimate), ci_lo: num(f.effect.ci95?.[0]), ci_hi: num(f.effect.ci95?.[1]),
       method: f.analyzer.name, first_reported: firstReported, last_reported: lastReported, current: isCurrent,
     });

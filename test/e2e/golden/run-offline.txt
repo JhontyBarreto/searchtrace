@@ -10,24 +10,20 @@ Collecting
 
 The answer
   In the last 28 days Google sent you 34,725 clicks, 3,037 fewer than the 28 days before (-8%).
-  This is normal wobble. Clicks moved -8%, and swings this size happen about 1 in 6 four-week
-  periods in your history. Across the whole site that's nothing to act on, but parts of it did
-  change.
+  Clicks fell 8% (likely 6.5% to 9.6%). That's a real drop, but smaller than the 10% we treat as
+  worth acting on, so keep an eye on it rather than act on it. The biggest real change is in pages
+  under /services/ (-1,702 clicks); details below.
 
 Also worth knowing
-  · Real change: clicks on /blog/* dropped by 18% around 15 Sep 2026
-  · Real change: this is a real drop, and it most likely came from a change on your site. 27 of the
-    40 pages you changed on 9 Sep 2026 (new titles, for example "How Much to Fix a Radiator |
-    Pipewell Plumbing" became "How Much to Fix a Radiator - Pipewell Plumbing") lost clicks. Google
-    recrawled them between 9 Sep 2026 and 15 Sep 2026, and the drop started right after. Pages you
-    didn't touch held steady (+2.6%). Confidence: high · Why: Your change (Estimated)
-  · Real change: people clicked less even though you ranked in the same place. On searches where
-    Google now shows an AI Overview that doesn't cite you, your click rate fell 29% more than on
-    similar searches without one (likely range 24% to 34%). This is an estimate: Google doesn't
-    report clicks lost to AI Overviews · Why: AI Overview (Estimated)
-  · Google hides the exact searches behind 36% of your clicks. Page-level numbers include
-    everything.
+  · Real change: clicks on the whole site rose by 12% around 20 Apr 2026
+  · Real change: clicks on the whole site (desktop) rose by 13% around 20 Apr 2026 (most likely
+    between 20 Apr 2026 and 22 Apr 2026)
+  · Real change: clicks on searches without your business name dropped by 12% around 10 Sep 2026
+    (most likely between 9 Sep 2026 and 10 Sep 2026)
+  · We can name the searches behind 64% of your clicks. Google hides the rest (36%); page numbers
+    include all of them.
 
 Report   file://<DATA>/reports/latest.html
-Why      npx searchtrace why
-Graph    searchtrace-data/graphify-out/graph.json (1,080 nodes) · ask it in Claude: see docs/GRAPHIFY.md
+Why      searchtrace why
+Graph    searchtrace-data/graphify-out/graph.json (1,075 nodes)
+         ask it in Claude: https://github.com/JhontyBarreto/searchtrace/blob/main/docs/GRAPHIFY.md

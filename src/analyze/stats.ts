@@ -556,18 +556,25 @@ export function periodCompare(i: PeriodCompareInput): PeriodEffect {
   };
   // Update windows are left out of the null so it describes ordinary weeks. When Google ships
   // updates so often that fewer than MIN_EMPIRICAL_PAIRS ordinary pairs remain (2025 to 2026 had
-  // one every few weeks), keep them in rather than fall back to the quasi-Poisson SE alone: that
-  // SE ignores week-to-week swings and, on a real small site, was 2 to 8 times too narrow. A null
-  // that includes update periods is wider, so this errs towards "not enough data".
-  let r = collect(true);
-  if (r.length < MIN_EMPIRICAL_PAIRS && excluded.length > 0) r = collect(false);
+  // one every few weeks), the SE still uses every pair rather than fall back to the quasi-Poisson
+  // SE alone: that SE ignores week-to-week swings and, on a real small site, was 2 to 8 times too
+  // narrow. A robust (MAD) spread over the mixture widens only modestly from update tails, so this
+  // mostly protects the SE when ordinary months are noisy.
+  //
+  // The "swings this size happen about 1 in N four-week periods" frequency is different: it counts
+  // tails, and update periods are exactly the tails. So it only ever comes from ordinary pairs, and
+  // is null (no sentence) when fewer than MIN_EMPIRICAL_PAIRS of them exist. Pairs end every 7 days,
+  // so K overlapping pairs are worth about K * 7 / (2 * len) independent ones; overlap does not bias
+  // a frequency, it only makes it noisier.
+  const ordinary = collect(true);
+  const r = ordinary.length < MIN_EMPIRICAL_PAIRS && excluded.length > 0 ? collect(false) : ordinary;
   const K = r.length;
   let seEmp: number | null = null;
   let freq: number | null = null;
-  if (K >= MIN_EMPIRICAL_PAIRS) {
-    seEmp = 1.4826 * mad(r);
+  if (K >= MIN_EMPIRICAL_PAIRS) seEmp = 1.4826 * mad(r);
+  if (ordinary.length >= MIN_EMPIRICAL_PAIRS) {
     const size = Math.abs(lnR);
-    freq = r.filter((v) => Math.abs(v) >= size).length / K;
+    freq = ordinary.filter((v) => Math.abs(v) >= size).length / ordinary.length;
   }
   const useEmpirical = seEmp !== null && seEmp > seQp;
   const se = useEmpirical ? (seEmp as number) : seQp;

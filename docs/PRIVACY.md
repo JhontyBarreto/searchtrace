@@ -57,7 +57,11 @@ Your Search Console data shows which searches bring people to your site, how man
 
 ## Crawling your site
 
-The crawler only fetches pages on your own property. Every redirect hop is re-checked, and requests to private network addresses are refused. Page bodies are capped in size, sitemaps are read without expanding external entities, and only HTML is parsed.
+The crawler only fetches pages on your own property, and only on your site's own port (the default one, unless `siteOrigin` names another). Every redirect hop is re-checked. Private and reserved IP addresses (written as numbers, in any form) and internal names such as `localhost`, `.local` and `.internal` are refused. Each host name is also looked up before every request, and refused if it points at a private address, so a name on your own domain that resolves to 127.0.0.1 or 10.x is not fetched. If your site really does resolve to a private address from where you run searchtrace (split DNS at the office, or a hosts-file entry pointing at a local server), set `crawl.allowPrivateAddresses` to `true` in `config.json`.
+
+One gap remains, as with any lookup-then-fetch check: someone who controls your domain's DNS could answer the lookup with a public address and the fetch a moment later with a private one (DNS rebinding). The fetch sends no cookies or credentials, non-HTML answers are thrown away, and the only thing saved is the page's title, headings, description and links, in your own data folder.
+
+Page bodies are capped in size, sitemaps are read without expanding external entities, and only HTML is parsed. The crawler's user agent is `searchtrace/0.1 (+https://github.com/JhontyBarreto/searchtrace)`, and it honours robots.txt rules for `searchtrace`.
 
 ## Test data
 

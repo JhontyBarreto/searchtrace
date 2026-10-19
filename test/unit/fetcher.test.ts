@@ -1,7 +1,7 @@
 // Test 55: fetcher. Off-property redirects blocked, private IPs blocked, the decoded-size cap,
 // challenge detection, conditional GET and 304 handling, plus the robots.txt status rules.
 import { describe, expect, it } from 'vitest';
-import { fetchPage, isChallenge, loadRobots, urlAllowed, USER_AGENT } from '../../src/sources/crawl/fetcher.js';
+import { fetchPage, isChallenge, loadRobots, originPort, urlAllowed, USER_AGENT } from '../../src/sources/crawl/fetcher.js';
 import { isAllowed } from '../../src/sources/crawl/robots.js';
 import { fakeFetch } from '../helpers/index.js';
 
@@ -17,6 +17,17 @@ describe('urlAllowed', () => {
     expect(urlAllowed('ftp://example.com/a', PROPERTY)).toBe(false);
     expect(urlAllowed('https://user:pw@example.com/a', PROPERTY)).toBe(false);
     expect(urlAllowed('not a url', PROPERTY)).toBe(false);
+  });
+
+  it('refuses any port but the default, unless siteOrigin names it', () => {
+    expect(urlAllowed('http://redis.example.com:6379/', PROPERTY)).toBe(false);
+    expect(urlAllowed('https://example.com:8443/a', PROPERTY)).toBe(false);
+    expect(urlAllowed('https://example.com:8443/a', PROPERTY, '8443')).toBe(true);
+    // An explicit default port is the default port.
+    expect(urlAllowed('https://example.com:443/a', PROPERTY)).toBe(true);
+    expect(originPort('https://example.com:8443/')).toBe('8443');
+    expect(originPort('https://example.com/')).toBe('');
+    expect(originPort(undefined)).toBe('');
   });
 
   it('refuses private hosts even when they are the property itself', () => {
@@ -122,6 +133,32 @@ describe('fetchPage', () => {
     expect((await fetchPage(ff.fetch, 'https://example.com/sniff', OPTS)).outcome).toBe('ok');
     expect((await fetchPage(ff.fetch, 'https://example.com/slow', OPTS)).outcome).toBe('timeout');
     expect((await fetchPage(ff.fetch, 'https://example.com/down', OPTS)).outcome).toBe('network_error');
+  });
+
+  it('refuses a name on the property that resolves to a private address, before requesting it', async () => {
+    const ff = fakeFetch([{ url: 'https://www.example.com/', reply: { headers: HTML, body: '<html></html>' } }]);
+    const lookups: string[] = [];
+    const resolveHost = async (h: string): Promise<string[]> => {
+      lookups.push(h);
+      if (h === 'admin.example.com') return ['93.184.216.34', '127.0.0.1'];
+      if (h === 'gone.example.com') throw new Error('ENOTFOUND');
+      return ['93.184.216.34'];
+    };
+    expect((await fetchPage(ff.fetch, 'https://admin.example.com/', { ...OPTS, resolveHost })).outcome).toBe('private_address');
+    // A failed lookup is a network error, not a refusal.
+    expect((await fetchPage(ff.fetch, 'https://gone.example.com/', { ...OPTS, resolveHost })).outcome).toBe('network_error');
+    expect((await fetchPage(ff.fetch, 'https://www.example.com/', { ...OPTS, resolveHost })).outcome).toBe('ok');
+    expect(ff.calls.map((c) => c.url)).toEqual(['https://www.example.com/']);
+    expect(lookups).toEqual(['admin.example.com', 'gone.example.com', 'www.example.com']);
+    // A redirect hop is looked up too.
+    const hop = fakeFetch([{ url: 'https://www.example.com/r', reply: { status: 302, headers: { location: 'https://admin.example.com/x' } } }]);
+    const r = await fetchPage(hop.fetch, 'https://www.example.com/r', { ...OPTS, resolveHost });
+    expect(r.outcome).toBe('private_address');
+    expect(hop.calls).toHaveLength(1);
+    // robots.txt on a private host: nothing there is fetched, and the reason is kept.
+    const rb = await loadRobots(ff.fetch, 'https://admin.example.com/', { property: PROPERTY, userAgent: USER_AGENT, timeoutMs: 5000, resolveHost });
+    expect(rb.state).toBe('unreachable');
+    expect(rb.privateAddress).toBe(true);
   });
 
   it('never fetches a private starting URL', async () => {

@@ -227,6 +227,20 @@ describe('disk store specifics', () => {
     expect(all.filter((n) => n.includes('.tmp-'))).toEqual([]);
   });
 
+  it('reads only the meta line of a partition, without decoding its rows', async () => {
+    const store = await openStore(dir, createSecretRegistry({ ci: false }));
+    const many = Array.from({ length: 20_000 }, (_, k) => ({ s: 'p', p: `https://example.com/page-${k}`, c: k % 7, i: k, ps: k * 3 }));
+    const rel = layout.gscDay('2026-10-03');
+    await store.writePartition(rel, meta(), many);
+    expect(await store.readPartitionMeta?.(rel)).toEqual(meta());
+    // Cut the file in half: a full decode fails, the meta read never gets that far.
+    const abs = join(dir, rel);
+    const bytes = readFileSync(abs);
+    writeFileSync(abs, bytes.subarray(0, Math.floor(bytes.length / 2)));
+    await expect(store.readPartition(rel)).rejects.toThrow();
+    expect((await store.readPartitionMeta?.(rel))?.fetchedAt).toBe('2026-10-06T06:17:00Z');
+  });
+
   it('a corrupt partition fails loudly with the path in the message', async () => {
     const store = await openStore(dir, createSecretRegistry({ ci: false }));
     mkdirSync(join(dir, 'gsc', '2026', '10'), { recursive: true });

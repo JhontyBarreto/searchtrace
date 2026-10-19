@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { addDays } from '../../src/core/time.js';
 import { rngFor } from '../../src/core/rng.js';
 import type { AioInput, AnalysisWindows, Cell, CtrCurve, Device, Rng, SerpCandidate, SerpObservation } from '../../src/core/types.js';
-import { analyzeAio, bucketOf, estimateGroups, type QueryData, statusOf, titleRewritten, type WindowName } from '../../src/analyze/aio.js';
+import { analyzeAio, bucketOf, estimateGroups, inclusionWeight, rankDomains, type QueryData, statusOf, titleRewritten, type WindowName } from '../../src/analyze/aio.js';
 import { poissonDraw } from '../../src/analyze/stats.js';
 import { renderSentence } from '../../src/report/copy.js';
 import { designSample } from '../../src/sources/dataforseo/sample.js';
@@ -255,6 +255,41 @@ describe('analyzeAio', () => {
     expect(fd?.effect.absolute).toBeLessThan(0);
   });
 
+  it('apportions with the DiD counterfactual, so per-search shares add up to the missing clicks when nothing caps them', () => {
+    const specs = population(150, { aioShare: 0.4, mult: (w) => (w === 'c' ? 0.7 : 1) });
+    // Every uncited search lost a lot at the same position: no per-search cap applies.
+    const samePos = new Map(specs.map((x) => [`${x.keyword}|desktop`, -1e6]));
+    const out = analyzeAio(input(specs, { seed: 'sig', samePos }));
+    const did = out.estimates.find((e) => e.estimator === 'did');
+    const sum = out.facts.reduce((t, x) => t + (x.attributedClicks ?? 0), 0);
+    // Census weights (w = 1): sum of CF_q |tau| over the kept uncited searches is the DiD's missing clicks.
+    expect(sum).toBeCloseTo(did?.missingClicks as number, 6);
+    // A sighting stays a fact: its share is a slot, never the fact's effect.
+    const fact = out.findings.find((x) => x.kind === 'aio_fact' && x.slots.attributed !== undefined);
+    expect(fact?.effect.absolute).toBeNull();
+    expect(fact?.effect.estimate).toBeNull();
+  });
+
+  it('weights each search by the inclusion probability of being analysed: 1 / the second-largest pi of its checks', () => {
+    const at = (pi: number): SerpObservation => ({ ...obs({ keyword: 'w', pos: 3, imp: 1, mult: {}, checks: [] }, 0, { aio: true }), pi });
+    expect(inclusionWeight([at(0.5), at(0.2), at(0.1)], 'present')).toBeCloseTo(5, 12);
+    expect(inclusionWeight([at(0.5), at(0.2)], 'absent')).toBeCloseTo(5, 12);
+    // The latest check's small pi no longer inflates the weight; a single check uses its own pi.
+    expect(inclusionWeight([at(0.25)], 'single_present')).toBeCloseTo(4, 12);
+    expect(inclusionWeight([], null)).toBe(1);
+  });
+
+  it('ranks cited sites by checks, then URLs, then citation order, never alphabetically', () => {
+    const ref = (domain: string, url: string) => ({ domain, url, title: 't', source: null });
+    const check = (refs: ReturnType<typeof ref>[]): SerpObservation => ({
+      ...obs({ keyword: 'r', pos: 3, imp: 1, mult: {}, checks: [] }, 0, { aio: true }), aio: { async: false, citesUs: false, refs },
+    });
+    const one = check([ref('zeta.com', 'https://zeta.com/1'), ref('www.alpha.com', 'https://alpha.com/1'), ref('mid.com', 'https://mid.com/1'), ref('mid.com', 'https://mid.com/2'), ref('example.com', 'https://example.com/x')]);
+    expect(rankDomains([one], 'example.com')).toEqual(['mid.com', 'zeta.com', 'alpha.com']);
+    const two = check([ref('alpha.com', 'https://alpha.com/9')]);
+    expect(rankDomains([one, two], 'example.com')[0]).toBe('alpha.com');
+  });
+
   it('uses the configured false-discovery rate (AioInput.fdrQ), not a fixed 0.10', () => {
     const specs = population(150, { aioShare: 0.4, mult: (w) => (w === 'c' ? 0.7 : 1) });
     const did = (fdrQ?: number) => analyzeAio({ ...input(specs, { seed: 'sig' }), ...(fdrQ === undefined ? {} : { fdrQ }) }).estimates.find((e) => e.estimator === 'did');
@@ -290,6 +325,9 @@ describe('analyzeAio', () => {
     expect(fd?.template).toBe('not_enough_data');
     expect(fd?.slots.weeks).toBe(4);
     expect(fd?.falsifier.key).toBe('more_data');
+    // It says what failed (too few searches in a group), never "no clicks in the weeks before".
+    expect(['groups', 'coverage']).toContain(fd?.slots.aio_reason);
+    expect(fd?.slots.cpw).toBeUndefined();
   });
 
   it('45: a diverging pre-trend fails the placebo, so the DiD is unclear', () => {
@@ -313,6 +351,8 @@ describe('analyzeAio', () => {
     const cs = out.estimates.find((e) => e.estimator === 'cross_section');
     expect(cs?.real).toBe('unclear');
     expect(out.estimates.find((e) => e.estimator === 'did')?.real).toBe('underpowered');
+    // Before and after needs a second check of each search: that is the reason given on day 0.
+    expect(out.findings.find((x) => x.kind === 'aio_effect' && x.slots.estimator === 'did')?.slots.aio_reason).toBe('single_check');
     const fCs = out.findings.find((x) => x.kind === 'aio_effect' && x.slots.estimator === 'cross_section');
     expect(fCs?.slots.check).toBe('single_check');
     expect(fCs?.slots.single_check).toBe('yes');

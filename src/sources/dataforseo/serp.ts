@@ -21,21 +21,30 @@ import type {
 } from '../../core/types.js';
 import { layout } from '../../store/layout.js';
 import { siteDomainOf } from '../../core/url.js';
-import { affordableChecks, budgetFor } from './budget.js';
+import { affordableChecks, budgetFor, planningPrice } from './budget.js';
 import { type DfsClient, type DfsEnvelope, PATHS, createDfsClient, dfsLimiters, taskOk, taskPending } from './client.js';
 import { resolveLocation } from './locations.js';
 import { normalizeSerp } from './normalize.js';
 import {
-  type DesignEvent, type RemoteTask, type SpendState, cachedRemote, cleanSpendEvents, designOf, fetchOurTasks, isEligible,
-  monthSpendUsd, pendingUnknownCount, reconcile, reconcileWindow, rememberRemote, resolveAgainstRemote, spendState, tagFor,
+  type DesignEvent, type RemoteTask, type SpendState, cleanSpendEvents, designOf, isEligible,
+  monthSpendUsd, pendingUnknownCount, reconcile, reconcileWindow, resolveIntents, spendState, sweep, tagFor,
 } from './reconcile.js';
-import { designSample } from './sample.js';
+import { designSample, hasSearchOperator } from './sample.js';
 
 type DfsConfig = Extract<Config['serp'], { provider: 'dataforseo' }>;
 
 export const BATCH_SIZE = 100;
+/** The first batch of a run is small, so a price above the planned one shows before much is spent. */
+export const PROBE_BATCH = 10;
 const HOUR_MS = 3_600_000;
 const RESULTS_KEPT_DAYS = 30;
+/** task_get codes that are final: the task will never have a result. */
+const TERMINAL_TASK_CODES = new Set([40102, 40400, 40401, 40501, 40503]);
+/** Any other failure on a task this old is treated as final too (tasks finish in minutes). */
+const SETTLE_AFTER_MS = 72 * HOUR_MS;
+const INCOMPLETE_SWEEP_NOTE = "DataForSEO's task list was too long to read in full, so this month's spend counts this folder's own records plus what could be read.";
+const RESERVED_NOTE = (n: number): string =>
+  `DataForSEO's task list was too long to confirm ${n} earlier check${n === 1 ? '' : 's'}; ${n === 1 ? 'it stays' : 'they stay'} reserved and won't be sent again.`;
 
 // ---------- shared helpers ----------
 
@@ -101,12 +110,12 @@ async function readState(ctx: RunContext): Promise<SpendState> {
 
 // ---------- collect ----------
 
-/** Posted, uncollected tasks young enough that DataForSEO still holds their results (30 days). */
-function pendingTasks(state: SpendState, now: Date): { taskId: string; at: string; intentKey: string }[] {
+/** Posted tasks with no result yet and no final error, young enough that DataForSEO still holds their results (30 days). */
+function pendingTasks(state: SpendState, now: Date): { taskId: string; at: string; intentKey: string; runId: string }[] {
   return [...state.tasks.values()]
-    .filter((t) => !t.collected && now.getTime() - Date.parse(t.at) < RESULTS_KEPT_DAYS * 86_400_000)
+    .filter((t) => !t.collected && !t.unavailable && now.getTime() - Date.parse(t.at) < RESULTS_KEPT_DAYS * 86_400_000)
     .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.taskId < b.taskId ? -1 : 1))
-    .map((t) => ({ taskId: t.taskId, at: t.at, intentKey: t.intentKey }));
+    .map((t) => ({ taskId: t.taskId, at: t.at, intentKey: t.intentKey, runId: t.runId }));
 }
 
 /** This run's serp partition, or a fresh name (from the clock) when an earlier collection in this run used it. */
@@ -146,6 +155,7 @@ async function collect(ctx: RunContext, client: DfsClient, state: SpendState, ph
   const toFetch = pending.filter((t) => ready.has(t.taskId) || now.getTime() - Date.parse(t.at) >= HOUR_MS);
   const siteDomain = siteDomainOf(ctx.config.property);
   const observations: SerpObservation[] = [];
+  const settle: { taskId: string; intentKey: string; reason: string }[] = [];
   let notReady = pending.length - toFetch.length;
   let broken = 0;
   await Promise.all(
@@ -170,8 +180,12 @@ async function collect(ctx: RunContext, client: DfsClient, state: SpendState, ph
           notReady++;
           return;
         }
+        const old = now.getTime() - Date.parse(t.at) >= SETTLE_AFTER_MS;
         if (!taskOk(task.status_code)) {
-          broken++;
+          // A final answer (40102 No Search Results and the like) is settled at once, anything else once the task is old.
+          if (TERMINAL_TASK_CODES.has(task.status_code) || old) {
+            settle.push({ taskId: t.taskId, intentKey: t.intentKey, reason: `${task.status_code} ${(task.status_message ?? '').slice(0, 120)}`.trim() });
+          } else broken++;
           return;
         }
         const d = designOf(state, t.intentKey);
@@ -182,12 +196,28 @@ async function collect(ctx: RunContext, client: DfsClient, state: SpendState, ph
           });
           observations.push({ ...obs, taskId: obs.taskId || t.taskId });
         } catch {
-          broken++;
+          if (old) settle.push({ taskId: t.taskId, intentKey: t.intentKey, reason: 'the result could not be read' });
+          else broken++;
         }
       }),
     ),
   );
   observations.sort((a, b) => (a.observedAt < b.observedAt ? -1 : a.observedAt > b.observedAt ? 1 : a.taskId < b.taskId ? -1 : 1));
+  // Backstop, one row at a time like the crawler: a row the store's key guard would refuse is left
+  // out (and settled), so one odd result can never sink the whole paid batch.
+  const kept: SerpObservation[] = [];
+  let refused = 0;
+  for (const o of observations) {
+    try {
+      ctx.secrets.assertNoSecret(JSON.stringify(o));
+      kept.push(o);
+    } catch {
+      refused++;
+      settle.push({ taskId: o.taskId, intentKey: o.intentKey, reason: 'the result contained text that looks like a key' });
+    }
+  }
+  observations.length = 0;
+  observations.push(...kept);
   if (observations.length > 0) {
     const rel = await serpPartitionPath(ctx);
     const meta: PartitionMeta = {
@@ -201,6 +231,18 @@ async function collect(ctx: RunContext, client: DfsClient, state: SpendState, ph
       await ctx.store.append('spend', { type: 'collected', at, runId: ctx.runId, intentKey: o.intentKey, taskId: o.taskId, partition: written.path } satisfies SpendEvent);
     }
     phase.notes.push(`Collected ${observations.length} AI Overview check${observations.length === 1 ? '' : 's'}.`);
+  }
+  if (settle.length > 0) {
+    const at = toInstant(ctx.clock.now());
+    for (const x of settle) {
+      await ctx.store.append('spend', { type: 'unavailable', at, runId: ctx.runId, intentKey: x.intentKey, taskId: x.taskId, reason: x.reason } satisfies SpendEvent);
+    }
+    const final = settle.length - refused;
+    if (final > 0) {
+      const reasons = [...new Set(settle.slice(0, 3).map((x) => x.reason))].join('; ');
+      phase.notes.push(`DataForSEO had no result for ${final} check${final === 1 ? '' : 's'} (${reasons}); ${final === 1 ? 'it' : 'they'} won't be retried.`);
+    }
+    if (refused > 0) phase.notes.push(`${refused} AI Overview result${refused === 1 ? '' : 's'} contained text that looks like a key and ${refused === 1 ? 'was' : 'were'} not saved.`);
   }
   if (notReady > 0) phase.notes.push(`${notReady} check${notReady === 1 ? ' is' : 's are'} still being processed by DataForSEO and will be collected next run.`);
   // Never fatal (4.7): unread results stay pending and are fetched again next run.
@@ -227,7 +269,10 @@ export const serpCollectCollector: Collector<SerpCollectPlan> = {
       lines,
       estRequests: 1 + (pending.length ? 1 : 0) + pending.length,
       estUsd: 0,
-      payload: { reconcileFrom: toInstant(win.from), pendingTaskIds: pending.map((p) => p.taskId) },
+      payload: {
+        reconcileFrom: toInstant(win.from), pendingTaskIds: pending.map((p) => p.taskId),
+        thisRunTaskIds: pending.filter((p) => p.runId === ctx.runId).map((p) => p.taskId),
+      },
       skip: null,
     };
   },
@@ -250,9 +295,13 @@ export const serpCollectCollector: Collector<SerpCollectPlan> = {
       const rec = await reconcile(ctx, client, { useCache: true });
       bump(phase, 'dataforseo.id_list', rec.requests);
       const found = rec.appended.filter((e) => e.type === 'posted').length;
-      const dropped = rec.appended.filter((e) => e.type === 'abandoned').length;
+      const dropped = rec.appended.filter((e) => e.type === 'abandoned' && !e.unconfirmed).length;
+      const unconfirmed = rec.appended.filter((e) => e.type === 'abandoned' && e.unconfirmed).length;
       if (found) phase.notes.push(`Confirmed ${found} earlier check${found === 1 ? '' : 's'} with DataForSEO.`);
       if (dropped) phase.notes.push(`${dropped} earlier request${dropped === 1 ? '' : 's'} never reached DataForSEO and can be sent again.`);
+      if (unconfirmed) phase.notes.push(`${unconfirmed} earlier check${unconfirmed === 1 ? '' : 's'} could not be confirmed before ${unconfirmed === 1 ? 'its' : 'their'} week ended; the cost is counted as spent.`);
+      if (rec.stillReserved) phase.notes.push(RESERVED_NOTE(rec.stillReserved));
+      if (!rec.complete) phase.notes.push(INCOMPLETE_SWEEP_NOTE);
       await collect(ctx, client, rec.state, phase);
     } catch (e) {
       const err = errorOf(e, ctx);
@@ -346,20 +395,33 @@ async function postContext(ctx: RunContext, cfg: DfsConfig, network: boolean): P
   let state = await readState(ctx);
   let remote: RemoteTask[] = [];
   if (client) {
-    const cached = cachedRemote(ctx);
-    if (cached) remote = cached;
-    else {
-      const win = reconcileWindow(state, ctx.clock.now());
-      const got = await fetchOurTasks(client, ctx.config.property, win.from, win.to);
-      requests['dataforseo.id_list'] = got.requests;
-      remote = got.tasks;
-      rememberRemote(ctx, remote);
-    }
-    // Apply the resolutions in memory only: plan() never writes.
-    const virtual = resolveAgainstRemote(state, remote, ctx.clock.now(), ctx.config.property);
-    if (virtual.length) state = spendState([...cleanSpendEvents(await ctx.store.readLedger<unknown>('spend')), ...virtual]);
+    const sw = await sweep(ctx, client, { useCache: true });
+    remote = sw.snapshot.tasks;
+    // Apply the resolutions in memory only: plan() never writes. Old unresolved intents get a fresh, narrow lookup.
+    const r = await resolveIntents(ctx, client, state, sw.snapshot);
+    if (sw.requests + r.requests) requests['dataforseo.id_list'] = sw.requests + r.requests;
+    if (r.events.length) state = spendState([...cleanSpendEvents(await ctx.store.readLedger<unknown>('spend')), ...r.events]);
   }
   return { cfg, client, state, remote, requests };
+}
+
+/**
+ * The price to plan with: the configured one (never below $0.0012), raised to the 90th percentile
+ * of the last 200 real charges. Operator searches (billed at 5x, now never posted) are ignored, so
+ * one old outlier can't cut a month of checks.
+ */
+export function priceFor(state: SpendState, configured: number): number {
+  const recent = [...state.tasks.values()].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0)).slice(0, 200);
+  const costs: number[] = [];
+  for (const t of recent) {
+    const kw = designOf(state, t.intentKey)?.keyword;
+    if (kw !== undefined && hasSearchOperator(kw)) continue;
+    if (t.costUsd > 0) costs.push(t.costUsd);
+  }
+  const floor = planningPrice(configured);
+  if (costs.length < 10) return floor;
+  costs.sort((a, b) => a - b);
+  return Math.max(floor, costs[Math.ceil(0.9 * costs.length) - 1]);
 }
 
 export const serpPoster: SerpPoster = {
@@ -379,7 +441,7 @@ export const serpPoster: SerpPoster = {
     if (!credentials(ctx, cfg)) return skipPlan(empty, missingLoginNote(cfg));
 
     const pc = await postContext(ctx, cfg, !ctx.flags.dryRun);
-    const cost = cfg.costPerCheckUsd;
+    const cost = priceFor(pc.state, cfg.costPerCheckUsd);
     const perRun = ctx.flags.budgetUsd ?? cfg.maxPerRunUsd;
     let balance: number | null = Number.POSITIVE_INFINITY; // a dry run does not ask for the balance
     if (pc.client) {
@@ -471,7 +533,7 @@ function batchFailure(e: unknown): { kind: 'failed' | 'unknown'; reason: string;
   if (isStError(e)) {
     const x = e as StError & { status?: number; dfsCode?: number; notSent?: boolean };
     if (e.code === 'auth') return { kind: 'failed', reason: 'DataForSEO did not accept the login', stop: 'auth' };
-    if (e.code === 'budget') return { kind: 'failed', reason: 'DataForSEO balance too low', stop: 'budget' };
+    if (e.code === 'budget') return { kind: 'failed', reason: e.message.replace(/^DataForSEO says /, '').replace(/\.$/, ''), stop: 'budget' };
     if (e.code === 'network') return { kind: x.notSent ? 'failed' : 'unknown', reason: x.notSent ? 'request never left this machine' : 'no answer after sending', stop: 'other' };
     if (e.code === 'http') {
       if (typeof x.dfsCode === 'number') {
@@ -513,12 +575,13 @@ async function postAll(plan: CollectorPlan<SerpPostPlan>, ctx: RunContext, cfg: 
   const now = ctx.clock.now();
   const today = ptDate(now);
   const week = plan.payload.isoWeek;
-  const cost = cfg.costPerCheckUsd;
 
-  // Authoritative re-check right before spending: settle unknowns, read the balance, recompute A.
+  // Authoritative re-check right before spending: settle unknowns (old ones with a fresh lookup),
+  // read the balance, recompute A.
   const rec = await reconcile(ctx, client, { useCache: true });
   bump(phase, 'dataforseo.id_list', rec.requests);
   let state = rec.state;
+  const cost = priceFor(state, cfg.costPerCheckUsd);
   let balance: number | null = null;
   try {
     balance = await balanceOf(client);
@@ -562,8 +625,19 @@ async function postAll(plan: CollectorPlan<SerpPostPlan>, ctx: RunContext, cfg: 
   let failed = 0;
   let unknown = 0;
   let stop: 'auth' | 'budget' | 'other' | null = null;
-  for (let i = 0; i < due.length && !stop; i += BATCH_SIZE) {
-    const batch = due.slice(i, i + BATCH_SIZE).map((u) => ({ ...u, tag: tagFor(ctx.config.property, u.intentKey) }));
+  // The cap holds against what DataForSEO really bills: spent counts real charges (and the planned
+  // price for any answer we never saw), each batch is sized from what is left at the highest price
+  // seen so far, and the first batch is a small probe.
+  const cap = Math.min(b.availableUsd, plan.payload.budgetUsd);
+  let spent = 0;
+  let runPrice = cost;
+  let sent = 0;
+  while (sent < due.length && !stop) {
+    const room = affordableChecks(cap - spent, runPrice);
+    const n = Math.min(sent === 0 ? PROBE_BATCH : BATCH_SIZE, room, due.length - sent);
+    if (n <= 0) break;
+    const batch = due.slice(sent, sent + n).map((u) => ({ ...u, tag: tagFor(ctx.config.property, u.intentKey) }));
+    sent += n;
     // 1. Intent first, fsynced, so a crash after this point is settled by the next reconcile.
     for (const u of batch) {
       await ctx.store.append('spend', { type: 'intent', at: toInstant(ctx.clock.now()), runId: ctx.runId, intentKey: u.intentKey, tag: u.tag, estUsd: cost } satisfies SpendEvent);
@@ -584,8 +658,9 @@ async function postAll(plan: CollectorPlan<SerpPostPlan>, ctx: RunContext, cfg: 
       stop = f.stop;
       if (f.stop === 'auth') phase.errors.push({ code: 'auth', message: 'DataForSEO did not accept the login.' });
       if (f.stop === 'budget') {
-        phase.notes.push('DataForSEO says the balance is too low. Top it up to keep checking AI Overviews.');
-        ctx.log.warn('DataForSEO says the balance is too low, so no AI Overview checks were posted.');
+        const err = e as StError;
+        phase.notes.push(`${err.message} ${err.fix ?? ''}`.trim());
+        ctx.log.warn(`${err.message} No more AI Overview checks were posted this run.`);
       }
     } finally {
       bump(phase, 'dataforseo.task_post');
@@ -599,17 +674,27 @@ async function postAll(plan: CollectorPlan<SerpPostPlan>, ctx: RunContext, cfg: 
         await ctx.store.append('spend', { type: 'posted', at, runId: ctx.runId, intentKey: u.intentKey, tag: u.tag, taskId: o.taskId, costUsd: o.costUsd } satisfies SpendEvent);
         posted++;
         phase.costUsd += o.costUsd;
+        spent += o.costUsd;
+        runPrice = Math.max(runPrice, o.costUsd);
       } else {
         await ctx.store.append('spend', { type: o.kind, at, runId: ctx.runId, intentKey: u.intentKey, tag: u.tag, reason: o.reason } satisfies SpendEvent);
         if (o.kind === 'failed') failed++;
-        else unknown++;
+        else {
+          unknown++;
+          spent += runPrice; // it may have been charged
+        }
       }
     }
   }
   phase.rows = posted;
+  if (runPrice > cost + 1e-12) {
+    phase.notes.push(`DataForSEO billed ${usd(runPrice)} per check, above the ${usd(cost)} searchtrace plans with; posting stopped at the cap.`);
+  }
   if (posted) phase.notes.push(`Posted ${posted} AI Overview check${posted === 1 ? '' : 's'} (${usd(phase.costUsd)}). Results arrive by the next run.`);
   phase.notes.push(`AI Overview spend this month: ${usd(spend + phase.costUsd)} of ${usd(cfg.monthlyBudgetUsd)}.`);
-  if (allDue.length > due.length) phase.notes.push(`${allDue.length - due.length} more check${allDue.length - due.length === 1 ? '' : 's'} wait for budget in a later run.`);
+  const waiting = allDue.length - sent;
+  if (waiting > 0 && !stop) phase.notes.push(`${waiting} more check${waiting === 1 ? '' : 's'} wait for budget in a later run.`);
+  if (!rec.complete) phase.notes.push(INCOMPLETE_SWEEP_NOTE);
   if (unknown) phase.notes.push(`${unknown} request${unknown === 1 ? '' : 's'} got no clear answer; the next run checks with DataForSEO before sending anything again.`);
   if (failed) phase.notes.push(`${failed} check${failed === 1 ? '' : 's'} could not be posted and will be tried again.`);
   // A low balance is a warning, not a failure (D18); the intents stay eligible for the next run.

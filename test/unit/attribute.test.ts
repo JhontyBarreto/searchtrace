@@ -7,6 +7,7 @@ import {
 } from '../../src/analyze/attribute.js';
 import { computeWindows } from '../../src/analyze/windows.js';
 import type { Group } from '../../src/analyze/waterfall.js';
+import { renderSentence } from '../../src/report/copy.js';
 
 const D = '2026-10-03';
 const windows = computeWindows(D, 28);
@@ -103,6 +104,88 @@ describe('cause for a scope (5.12)', () => {
     expect(causeForScope(facts({ rank: -150 }), c)).toMatchObject({
       cause: 'google_update', template: 'real_google_no_changes', slots: { date: '2026-09-20', n_days: 5, update: 'September 2026 core update' },
     });
+  });
+});
+
+describe('cause overrides weigh what each cause explains', () => {
+  const change: SiteChange = {
+    id: 'sitechg_y', source: 'snapshot', field: 'title', cls: 'snippet', templateKey: '/blog/*', signature: 'title:y', text: null,
+    deployed: { from: '2026-09-08T10:00:00Z', to: '2026-09-09T10:00:00Z', precision: 'bounded' },
+    touched: ['a', 'b'].map((p) => ({
+      url: `https://x.example/blog/${p}`, before: 'A | X', after: 'A - X', googleSeen: { from: '2026-09-09T10:00:00Z', to: '2026-09-12T18:00:00Z', precision: 'bounded' as const },
+    })),
+  };
+  const impact: SiteChangeImpact = {
+    siteChangeId: 'sitechg_y', outcome: 'ctr', treated: 2, controls: 40, controlFallback: false, tau: -0.3, ci95: [-0.4, -0.2], controlChange: 0,
+    controlCi95: [-0.03, 0.03], placebo: { tau: 0, ci95: [-0.1, 0.1] }, notYetSeen: [], synthesis: 'site_change', real: 'signal', reason: 'signal', findingId: 'fimp',
+  };
+  const cp: ChangePoint = {
+    seriesId: 'site:clicks', unit: { level: 'site', key: 'site', label: 'Whole site' }, metric: 'clicks', date: '2026-09-20',
+    dateWindow: ['2026-09-18', '2026-09-22'], before: 3000, after: 2000, ratio: 0.67, ci95: [0.6, 0.75], p: 0.001, q: 0.01, shape: 'step',
+    slopePerWeek: null, overlaps: [{ eventId: 'core1', kind: 'core', title: 'September 2026 core update' }], localisation: null,
+    seasonalMatch: false, tooRecent: false, mode: 'daily',
+  };
+  const site = (touchedDrop: number): ScopeFacts => {
+    const f = facts({ rank: -9000, samePos: -1000 }, {
+      unit: { level: 'site', key: 'site', label: 'Whole site' },
+      pages: new Set(['https://x.example/blog/a', 'https://x.example/blog/b', 'https://x.example/x']),
+      pageClicks: new Map([
+        ['https://x.example/blog/a', { b: 1000, c: 1000 - touchedDrop / 2 }], ['https://x.example/blog/b', { b: 1000, c: 1000 - touchedDrop / 2 }],
+        ['https://x.example/x', { b: 98_000, c: 98_000 - (10_000 - touchedDrop) }],
+      ]),
+    });
+    f.decomposition = { ...f.decomposition, unit: f.unit };
+    return f;
+  };
+  const c = ctx({
+    siteChanges: [change], siteChangeImpacts: [impact], impactFindingIds: new Map([['sitechg_y', 'fimp']]), changePoints: [cp],
+    events: [update('core1', 'core', 'September 2026 core update', '2026-09-15T16:00:00Z', '2026-09-29T16:00:00Z')],
+  });
+
+  it('a minor edit on 2 pages does not explain a site-wide drop a core update explains (was: "Your change, confidence high")', () => {
+    // The 2 changed pages lost 200 of 10,000 clicks: 2% of the drop. The update is the cause.
+    const r = causeForScope(site(200), c);
+    expect(r.cause).toBe('google_update');
+    expect(r.template).toBe('real_google_no_changes');
+  });
+
+  it('a change holding a quarter to a half of the drop is named alongside the other cause', () => {
+    const r = causeForScope(site(3500), c);
+    expect(r).toMatchObject({ cause: 'mixed', template: 'mixed', ambiguous: true, slots: { a: 'site_change', b: 'google_update' } });
+  });
+
+  it('a change holding most of the drop is the cause', () => {
+    expect(causeForScope(site(7000), c)).toMatchObject({ cause: 'site_change', template: 'real_site_change' });
+  });
+
+  it('a section or search borrows the site-wide AI Overview estimate as Possible, with its own share', () => {
+    const q = facts({ samePos: -150 }, { unit: { level: 'query', key: 'how to x', label: 'how to x' }, checkedShare: 1, aioUncitedShare: 1, aioAttributed: 42 });
+    const cc = ctx({ aioDidSignal: true, aioDid: { tau: -0.29, ci95: [-0.34, -0.24] } });
+    const r = causeForScope(q, cc);
+    expect(r).toMatchObject({ cause: 'ai_overview', template: 'aio_not_cited', ambiguous: true, slots: { scope: 'query', a: 42, lost: 150 } });
+    const f = scopeFinding(q, { real: 'signal', reason: 'signal', power: null, failed: [], estimate: -0.4, ci95: [-0.55, -0.25], freq: null }, r, cc,
+      { kind: 'waterfall', id: 'fq', B: 200, cpFindingIds: new Map(), measurementCap: false });
+    expect(f.causeConfidence).toBe('AMBIGUOUS');
+    const said = renderSentence(f.template, f.slots);
+    expect(said).toContain('This search shows an AI Overview');
+    expect(said).toContain('about 42 of the 150 clicks lost');
+    // The whole site keeps the site-wide wording and its Estimated confidence.
+    const s = causeForScope(facts({ samePos: -150 }, { unit: { level: 'site', key: 'site', label: 'Whole site' }, aioUncitedShare: 1 }), cc);
+    expect(s).toMatchObject({ cause: 'ai_overview', ambiguous: false });
+    expect(s.slots.scope).toBeUndefined();
+  });
+
+  it('a ranking move made mostly of searches Google does not name is Possible, worded without "0 searches"', () => {
+    const f = facts({ rank: -150 }, { movedSearches: 0, pbAll: 5.1, pcAll: 6.9 });
+    f.decomposition = { ...f.decomposition, remainderShare: { ranking: 0.8, samePos: 0 } } as typeof f.decomposition;
+    const r = causeForScope(f, ctx());
+    expect(r).toMatchObject({ cause: 'rank', ambiguous: true, slots: { pb: 5.1, pc: 6.9 } });
+    const said = renderSentence('ranking', { ...r.slots });
+    expect(said).toContain("mostly on searches Google doesn't name");
+    expect(said).not.toContain('0 searches');
+    const named = facts({ rank: -150 });
+    named.decomposition = { ...named.decomposition, remainderShare: { ranking: 0.2, samePos: 0 } } as typeof named.decomposition;
+    expect(causeForScope(named, ctx())).toMatchObject({ cause: 'rank', ambiguous: false });
   });
 });
 

@@ -23,12 +23,13 @@ import {
   type ScopeFacts, type ScopeVerdict, type SynthesisContext,
 } from './attribute.js';
 import { buildBrandMatcher } from './brand.js';
-import { analyzeChangePoints } from './changepoint.js';
+import { analyzeChangePointsWith } from './changepoint.js';
 import { fitCurve, segmentOf, type DatedCurveCell } from './ctr-curve.js';
 import { analyzeIndexStates } from './index-state.js';
 import { buildScorecard } from './scorecard.js';
 import { analyzeSiteChanges } from './site-change.js';
-import { benjaminiHochberg, dowFactors, normalCdf, overdispersion, periodCompare, seasonalSeries } from './stats.js';
+import { compareCounts, extraVariance, familyKey, scopeFamilyQ, type FamilyScope } from './scope-test.js';
+import { dowFactors, normalCdf, overdispersion, periodCompare, seasonalSeries } from './stats.js';
 import { DEFAULT_DELTA, decideVerdict } from './verdicts.js';
 import { bootstrapScopes, bootstrapSize, buildUnits, decomposeUnits, scopeDecomposition, type ScopeBoot, type ScopeSpec } from './waterfall.js';
 import { computeWindows, inWindow, windowsOverlap, withHistory } from './windows.js';
@@ -37,6 +38,8 @@ const TOP_SCOPES = 50;
 const TOP_FINDINGS = 25;
 const TOP_CP_PAGES = 200;
 const AIO_FACT_CAP = 200;
+/** A section whose top tested page holds this share of its volume is that page (tested once). */
+const DOMINANT_SHARE = 0.95;
 const SERP_MAX_POSITION = 20;
 const SERP_MIN_IMPRESSIONS = 10;
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -153,9 +156,10 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
   // comparisons add it to their own counting variance: impressions swing from month to month far
   // more than Poisson counts do (on a real small site the empirical SE was 7 times the quasi-Poisson
   // one), and a page is at least as jumpy as the whole site.
-  const imprExtraVar = hImpr.seSource === 'empirical' && hImpr.pre > 0 && hImpr.post > 0
-    ? Math.max(0, hImpr.se ** 2 - phiImpr * (1 / hImpr.pre + 1 / hImpr.post))
-    : 0;
+  const imprExtraVar = extraVariance(hImpr, phiImpr);
+  // The same for clicks: every section, page and search click comparison carries the site's own
+  // period-to-period swing on top of its counting noise, like the headline does.
+  const clickExtraVar = extraVariance(hClicks, phiClicks);
 
   // ---- SERP tallies ----
   const serp = i.db.serp();
@@ -170,10 +174,18 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
   const aioKeywords = new Set([...serpRecent.entries()].filter(([, t]) => t.aio > 0).map(([k]) => k.slice(0, k.lastIndexOf('|'))));
   const excludedPairs = new Set([...serpFit.keys(), ...serpCur.keys()].filter((k) => citedMostly(serpFit.get(k)) || citedMostly(serpCur.get(k))));
   const flattening = new Set([...serpCur.keys()].filter((k) => citedMostly(serpCur.get(k)) && !citedMostly(serpBase.get(k))));
+  // "An AI Overview that doesn't cite you" uses the same window as "checked" (from b0 onwards), so
+  // the newest checks count for both.
   const uncitedAio = (k: string): boolean => {
-    const t = serpCur.get(k);
+    const t = serpRecent.get(k);
     return !!t && t.checks > 0 && t.aio / t.checks >= 0.5 && !citedMostly(t);
   };
+  // Checks run on a search's main device only, so the other device of a checked search takes the
+  // checked device's status rather than counting as "no AI Overview": otherwise the AI Overview
+  // share of a scope's same-spot loss would miss every minority-device unit and rarely reach half.
+  const uncitedKeyword = new Set([...serpRecent.keys()].filter(uncitedAio).map((k) => k.slice(0, k.lastIndexOf('|'))));
+  const uncitedUnit = (q: string | null, dv: string): boolean =>
+    q !== null && (serpRecent.has(`${q}|${dv}`) ? uncitedAio(`${q}|${dv}`) : uncitedKeyword.has(q));
 
   // ---- Cells (one load covers the fit window, the placebo windows and both analysis windows) ----
   const cellsFrom = windows.fit[0] < windows.placebo.pre1[0] ? windows.fit[0] : windows.placebo.pre1[0];
@@ -231,7 +243,7 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
   const B = bootstrapSize(cfg.analysis.bootstrap.waterfall, model.cellCount);
   const boots: ScopeBoot[] = units.length > 0
     ? bootstrapScopes(model, units, scopeSpecs, {
-        B, curve, rng: rng('waterfall:redraw'), scopeRng: (sp) => rng(`waterfall:${sp.unit.level}:${sp.unit.key}`), phi: phiClicks,
+        B, curve, rng: rng('waterfall:redraw'), phi: phiClicks,
       })
     : scopeSpecs.map(() => ({ ci95: {}, groupCi: { demand: [0, 0], ranking: [0, 0], samePos: [0, 0], aioCitation: [0, 0], churn: [0, 0] }, pTotal: 1 }) as ScopeBoot);
   const decomps: ScopeDecomposition[] = scopeSpecs.map((sp, k) => scopeDecomposition(sp, units, boots[k]));
@@ -282,13 +294,14 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
   const cpCells = cellsAll.filter((c) => c.date >= cpFrom);
   for (const cls of ['brand', 'nonbrand'] as const) {
     const rows = cpCells.filter((c) => brand.isBrand(c.q) === (cls === 'brand'));
-    const unit: AnalysisUnit = { level: 'query', key: `class:${cls}`, label: cls === 'brand' ? 'Brand searches' : 'Other searches' };
+    // "Other searches" read as jargon: name the classes by what they hold (the matcher also counts typos and the domain).
+    const unit: AnalysisUnit = { level: 'query', key: `class:${cls}`, label: cls === 'brand' ? 'Searches for your business name' : 'Searches without your business name' };
     addSeries(`${cls}:clicks`, unit, 'clicks', fill(cpFrom, D, rows, 'c'), cpFrom, { seasonal: false });
     addSeries(`${cls}:impressions`, unit, 'impressions', fill(cpFrom, D, rows, 'i'), cpFrom, { seasonal: false });
   }
   const pageHistory = i.db.pageDaily(padFrom, D);
-  const byTemplate = new Map<string, { date: IsoDate; c: number; i: number }[]>();
-  const byPage = new Map<string, { date: IsoDate; c: number; i: number }[]>();
+  const byTemplate = new Map<string, { date: IsoDate; p: string; c: number; i: number }[]>();
+  const byPage = new Map<string, { date: IsoDate; p: string; c: number; i: number }[]>();
   for (const r of pageHistory) {
     const t = templateOf(r.p);
     const tl = byTemplate.get(t) ?? [];
@@ -298,23 +311,36 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
     list.push(r);
     byPage.set(r.p, list);
   }
+  const topPages = [...byPage.entries()]
+    .map(([p, rows]) => ({ p, rows, c: rows.filter((r) => inWindow(r.date, windows.baseline)).reduce((a, r) => a + r.c, 0), im: rows.filter((r) => inWindow(r.date, windows.baseline)).reduce((a, r) => a + r.i, 0) }))
+    .sort((a, b) => b.c - a.c || b.im - a.im || cmp(a.p, b.p))
+    .slice(0, TOP_CP_PAGES);
+  // A section made almost entirely of one tested page (the home page plus a few ?query variants of
+  // it) would report the same change twice: its series stays a localisation segment but is not
+  // tested. The share is measured over the change-point window, where it matters.
+  const segmentOnly = new Set<string>();
+  const tested = new Set(topPages.map((x) => x.p));
+  const cpSum = (rows: { date: IsoDate; c: number; i: number }[], m: 'c' | 'i'): number => rows.reduce((a, r) => a + (r.date >= cpFrom ? r[m] : 0), 0);
+  for (const [t, rows] of byTemplate) {
+    for (const [m, metric] of [['c', 'clicks'], ['i', 'impressions']] as const) {
+      const total = cpSum(rows, m);
+      const top = Math.max(0, ...[...new Set(rows.map((r) => r.p))].filter((p) => tested.has(p)).map((p) => cpSum(byPage.get(p) ?? [], m)));
+      if (total > 0 && top / total >= DOMINANT_SHARE) segmentOnly.add(`tpl:${t}:${metric}`);
+    }
+  }
   for (const [t, rows] of [...byTemplate.entries()].sort(([a], [b]) => cmp(a, b))) {
     const unit: AnalysisUnit = { level: 'template', key: t, label: t };
     addSeries(`tpl:${t}:clicks`, unit, 'clicks', fill(padFrom, D, rows, 'c'), padFrom, { segmentsOf: 'site:clicks' });
     addSeries(`tpl:${t}:impressions`, unit, 'impressions', fill(padFrom, D, rows, 'i'), padFrom, { segmentsOf: 'site:impressions' });
   }
-  const topPages = [...byPage.entries()]
-    .map(([p, rows]) => ({ p, rows, c: rows.filter((r) => inWindow(r.date, windows.baseline)).reduce((a, r) => a + r.c, 0), im: rows.filter((r) => inWindow(r.date, windows.baseline)).reduce((a, r) => a + r.i, 0) }))
-    .sort((a, b) => b.c - a.c || b.im - a.im || cmp(a.p, b.p))
-    .slice(0, TOP_CP_PAGES);
   for (const { p, rows } of topPages) {
     const unit: AnalysisUnit = { level: 'page', key: p, label: unitLabel('page', p) };
     addSeries(`page:${p}:clicks`, unit, 'clicks', fill(padFrom, D, rows, 'c'), padFrom);
     addSeries(`page:${p}:impressions`, unit, 'impressions', fill(padFrom, D, rows, 'i'), padFrom);
   }
-  const cpOut = optional('analyzeChangePoints', skipped, () => analyzeChangePoints({
+  const cpOut = optional('analyzeChangePoints', skipped, () => analyzeChangePointsWith({
     series, dow, events, dataThrough: D, historyStart, seasonalValues, fdrQ, delta: DEFAULT_DELTA.changepoint,
-  }), { changePoints: [] as ChangePoint[], findings: [] as Finding[], dispersion: {} });
+  }, { segmentOnly, extraVar: { clicks: clickExtraVar, impressions: imprExtraVar } }), { changePoints: [] as ChangePoint[], findings: [] as Finding[], dispersion: {} });
 
   // ---- Scorecard (B) ----
   const histOff = diffDays(padFrom, historyStart);
@@ -418,6 +444,27 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
     return before > 0 ? after / before - 1 : null;
   };
 
+  // Clicks per page in each window (for a site change's attributable share of a scope).
+  const pageClicks = new Map<string, { b: number; c: number }>();
+  for (const u of units) {
+    const t = pageClicks.get(u.key.page) ?? { b: 0, c: 0 };
+    t.b += u.base.C;
+    t.c += u.cur.C;
+    pageClicks.set(u.key.page, t);
+  }
+  // Each search's estimated share of the AI Overview loss (5.11.4), split across its units by their
+  // share of that search's same-spot loss, so pages and sections can quote their own part.
+  const aioByUnit = new Map<number, number>();
+  for (const fact of aio?.facts ?? []) {
+    if (fact.attributedClicks === null) continue;
+    const mem = idx.filter((k) => units[k].key.query === fact.keyword && units[k].key.device === fact.device);
+    const loss = sumOf(mem, (k) => Math.max(0, -units[k].bars.samePos));
+    for (const k of mem) {
+      const share = loss > 0 ? Math.max(0, -units[k].bars.samePos) / loss : 1 / mem.length;
+      aioByUnit.set(k, (aioByUnit.get(k) ?? 0) + fact.attributedClicks * share);
+    }
+  }
+
   const facts: ScopeFacts[] = scopeSpecs.map((sp, k) => {
     const d = decomps[k];
     const mem = sp.members;
@@ -428,11 +475,12 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
     const nIc = sumOf(nm, (u) => units[u].cur.I);
     const posB = nIb > 0 ? sumOf(nm, (u) => (units[u].base.pbar ?? 0) * units[u].base.I) / nIb : null;
     const posC = nIc > 0 ? sumOf(nm, (u) => (units[u].cur.pbar ?? 0) * units[u].cur.I) / nIc : null;
+    // Positions over every impression, hidden searches included (the page-level average).
+    const allPos = (side: 'base' | 'cur', I: number): number | null => (I > 0 ? sumOf(mem, (u) => (units[u][side].pbar ?? 0) * units[u][side].I) / I : null);
     // Same-spot movement in the direction of the scope's change (a loss in a drop, a gain in a rise).
     const sameWay = (u: number): number => Math.max(0, (d.deltaClicks < 0 ? -1 : 1) * units[u].bars.samePos);
     const negLoss = sumOf(mem, sameWay);
     const share = (pred: (u: number) => boolean): number => (negLoss > 0 ? sumOf(nm.filter(pred), sameWay) / negLoss : 0);
-    const qKey = (u: number): string => `${units[u].key.query}|${units[u].key.device}`;
     const queries = [...new Set(nm.map((u) => units[u].key.query as string))];
     const checkedQ = new Set(nm.filter((u) => checkedKeywords.has(units[u].key.query as string)).map((u) => units[u].key.query));
     const aioQ = new Set(nm.filter((u) => aioKeywords.has(units[u].key.query as string)).map((u) => units[u].key.query));
@@ -466,14 +514,19 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
       imprVerdict = iv.verdict;
       imprReason = iv.reason;
     }
+    const comparison = compareCounts(d.baseClicks, d.curClicks, phiClicks, clickExtraVar);
+    const aioParts = mem.filter((u) => aioByUnit.has(u));
     return {
       unit: sp.unit, decomposition: d, groupCi: boots[k]?.groupCi ?? null, pages, movedPages, baseImpressions: Ib, curImpressions: Ic, pb: posB, pc: posC,
+      pbAll: allPos('base', Ib), pcAll: allPos('cur', Ic),
       ctrB: nIb > 0 ? sumOf(nm, (u) => units[u].base.C) / nIb : null, ctrC: nIc > 0 ? sumOf(nm, (u) => units[u].cur.C) / nIc : null,
-      movedSearches: moved, checkedShare: share((u) => checkedKeywords.has(units[u].key.query as string)), aioUncitedShare: share((u) => uncitedAio(qKey(u))),
+      movedSearches: moved, checkedShare: share((u) => checkedKeywords.has(units[u].key.query as string)),
+      aioUncitedShare: share((u) => uncitedUnit(units[u].key.query, units[u].key.device)),
+      aioAttributed: aioParts.length ? sumOf(aioParts, (u) => aioByUnit.get(u) as number) : null,
       checkedQueries: checkedQ.size, aioQueries: aioQ.size,
       candidates: serpCandidates.filter((c) => (sp.unit.level === 'query' ? c.keyword === sp.unit.key : c.pages.some((p) => pages.has(p)))).length,
       kFallback: mem.some((u) => units[u].flags.includes('k_fallback')), unstableShare: curveMass > 0 ? unstableMass / curveMass : 0,
-      topSegment: top, yoy: yoyOf(mem, sp.unit.level), p: d.pTotal, q: null,
+      topSegment: top, yoy: yoyOf(mem, sp.unit.level), p: comparison.p, q: null, comparison, pageClicks,
       // The waterfall is a claim about clicks, so its floor is clicks (5.8): the 1,000-impression
       // alternative is for impression claims only, which have their own verdict above.
       floorsMet: sp.unit.level === 'query' ? sumOf(nm, (u) => units[u].Eb) >= 30 : d.baseClicks >= 30,
@@ -492,10 +545,21 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
     return by((u) => units[u].key.query ?? 'unattributed searches');
   }
 
-  // BH family 2: template, page and query scope totals that met their floors.
-  const family = facts.map((f, k) => (f.unit.level !== 'site' && f.floorsMet && f.p !== null ? k : -1)).filter((k) => k >= 0);
-  const qs = benjaminiHochberg(family.map((k) => facts[k].p as number));
-  family.forEach((k, j) => (facts[k].q = qs[j]));
+  // BH family 2 (fixed in advance, 5.12): every template, page and search that meets its baseline
+  // floor, not only the top movers that are shown. Ranking by the change picks what is displayed.
+  const familyScopes: FamilyScope[] = [
+    ...facts.filter((f) => f.unit.level === 'template').map((f) => ({
+      level: 'template' as const, key: f.unit.key, baseClicks: f.decomposition.baseClicks, curClicks: f.decomposition.curClicks, baseExpected: 0,
+    })),
+    ...pageRank.map(([p, mem]) => ({ level: 'page' as const, key: p, baseClicks: sumOf(mem, (u) => units[u].base.C), curClicks: sumOf(mem, (u) => units[u].cur.C), baseExpected: 0 })),
+    ...queryRank.map(([q, mem]) => ({
+      level: 'query' as const, key: q, baseClicks: sumOf(mem, (u) => units[u].base.C), curClicks: sumOf(mem, (u) => units[u].cur.C), baseExpected: sumOf(mem, (u) => units[u].Eb),
+    })),
+  ];
+  const familyQs = scopeFamilyQ(familyScopes, phiClicks, clickExtraVar);
+  for (const f of facts) {
+    if (f.unit.level !== 'site' && f.floorsMet) f.q = familyQs.get(familyKey(f.unit.level, f.unit.key)) ?? null;
+  }
 
   const scopeFindings: Finding[] = [];
   let underpoweredUnits = 0;
@@ -516,11 +580,10 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
       return;
     }
     const d = f.decomposition;
-    const est = d.baseClicks > 0 ? d.deltaClicks / d.baseClicks : null;
-    // As a share of the baseline; clicks can't fall by more than all of them, so the range stops at -100%.
-    const ci = est !== null && d.ci95?.total
-      ? ([Math.max(-1, d.ci95.total[0] / d.baseClicks), Math.max(-1, d.ci95.total[1] / d.baseClicks)] as [number, number])
-      : null;
+    // One period-comparison SE (counting noise plus the site's period-to-period variance), as a
+    // share of the baseline; clicks can't fall by more than all of them, so the range stops at -100%.
+    const est = f.comparison?.estimate ?? null;
+    const ci = f.comparison?.ci95 ?? null;
     const identification: IdCheck[] = cause.usesCurve && f.unstableShare >= 0.5 ? [{ name: 'curve_unstable', passed: false, detail: curve.unstable.join(',') }] : [];
     const r = decideVerdict({
       estimate: est ?? 0, ci95: ci, floorsMet: f.floorsMet, identification, q: f.q, delta: f.delta, fdrQ, weeksObserved: L / 7,
@@ -572,7 +635,9 @@ export function runAnalysisDetailed(i: AnalysisInput): AnalysisDetails {
     return !h || h.firstReported >= D;
   };
   const newSignal = findings.some((f) => f.real === 'signal' && f.kind !== 'headline' && f.kind !== 'aio_fact' && isNew(f.id));
-  const boring = hClicks.real === 'noise' && (hImpr.real === 'noise' || hImpr.real === 'underpowered') && !cpSignalInCurrent && !newSignal;
+  // "Nothing important changed" only when clicks are ordinary wobble: a real but small change
+  // (noise_small) is still a change, so it never makes a run boring.
+  const boring = hClicks.reason === 'noise_bounded' && (hImpr.reason === 'noise_bounded' || hImpr.real === 'underpowered') && !cpSignalInCurrent && !newSignal;
 
   const homepage = pickHomepage(units, i.property);
   const curCells = cellsAll.filter((c) => c.date >= c0);

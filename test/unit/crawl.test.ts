@@ -300,11 +300,11 @@ describe('crawl against a local fixture server', () => {
 describe('crawl edge cases (fake fetch)', () => {
   const html = { 'content-type': 'text/html' };
 
-  async function runWith(ff: ReturnType<typeof fakeFetch>, over: (c: Config) => Config = (c) => c) {
+  async function runWith(ff: ReturnType<typeof fakeFetch>, over: (c: Config) => Config = (c) => c, resolveHost?: (h: string) => Promise<string[]>) {
     const store = memoryStore();
     const index = await openIndex(':memory:');
     const clock = manualClock('2026-10-01T10:00:00Z');
-    const ctx = { ...context(store, index, clock, 1), fetch: ff.fetch };
+    const ctx = { ...context(store, index, clock, 1), fetch: ff.fetch, ...(resolveHost ? { resolveHost } : {}) };
     const cfg = over(ctx.config);
     const plan = await crawlCollector.plan({ ...ctx, config: cfg });
     const result = await crawlCollector.execute(plan, { ...ctx, config: cfg });
@@ -335,6 +335,23 @@ describe('crawl edge cases (fake fetch)', () => {
     expect(result.notes[0]).toBe('1 page saved · first snapshot, changes can be dated from the next run');
     // The homepage probe is reused as the homepage snapshot: fetched once.
     expect(ff.callsTo('https://www.fixture.example/')).toHaveLength(1);
+  });
+
+  it('refuses a site whose name resolves to a private address, unless crawl.allowPrivateAddresses says it is yours', async () => {
+    const routes = () => fakeFetch([
+      { url: 'https://fixture.example/robots.txt', reply: { status: 404 } },
+      { url: 'https://fixture.example/', reply: { headers: html, body: '<html><title>Home</title></html>' } },
+      { url: /^https:\/\/fixture\.example\/sitemap/, reply: { status: 404 } },
+    ]);
+    const splitHorizon = async (): Promise<string[]> => ['10.1.2.3'];
+    const refused = await runWith(routes(), (c) => c, splitHorizon);
+    expect(refused.result.status).toBe('partial');
+    expect(refused.result.notes.join(' ')).toContain('resolves to a private network address');
+    expect(refused.result.notes.join(' ')).toContain('crawl.allowPrivateAddresses');
+    const ff = routes();
+    const allowed = await runWith(ff, (c) => ({ ...c, crawl: { ...c.crawl, allowPrivateAddresses: true } }), splitHorizon);
+    expect(allowed.result.status).toBe('ok');
+    expect(allowed.rows.map((r) => r.outcome)).toEqual(['ok']);
   });
 
   it('skips when turned off or offline', async () => {

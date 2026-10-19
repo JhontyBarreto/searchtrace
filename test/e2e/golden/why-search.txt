@@ -1,21 +1,18 @@
 how to stop a dripping tap · last 28 days vs the 28 before
 
-  Real change · Why: AI Overview · Estimated
-  People clicked less even though you ranked in the same place. On searches where Google now shows
-  an AI Overview that doesn't cite you, your click rate fell 29% more than on similar searches
-  without one (likely range 24% to 34%). This is an estimate: Google doesn't report clicks lost to
-  AI Overviews.
+  Real change · Why: AI Overview (Possible)
+  This search shows an AI Overview that doesn't cite you. Across all such searches on your site,
+  click rates fell about 29% more than on similar searches without one (likely range 24% to 34%).
+  Applied here, that's about 42 of the 78 clicks lost; the rest isn't explained by the AI Overview.
+  This is an estimate: Google doesn't report clicks lost to AI Overviews.
 
   Where the clicks went (estimated, 95% range)
-    Fewer or more searches              -5    (-6 to -4)
-    Ranking                             +0    (+0 to +0)
-    Same spot, different click rate    -73    (-118 to -31)
-    AI Overview citation                +0    (+0 to +0)
-    Appeared or disappeared             +0    (+0 to +0)
+    More or fewer searches              -5    (-6 to -4)
+    Same position, fewer clicks        -73    (-118 to -31)
+    Total                              -78    (-108 to -39)
 
   Evidence
-    Measured   Search Console: 216 -> 138 clicks, 4,024 -> 3,899 impressions, position 4.0 -> 4.0   gsc/2026/10/2026-10-03.ndjson.gz
-    Estimated  Click waterfall over 2 units, 1,000 bootstrap replicates: -123 to -36 clicks   gsc/2026/10/2026-10-03.ndjson.gz
+    Measured   Search Console: 216 -> 138 clicks, 4,024 -> 3,899 impressions, position 4.0 -> 4.0
 
   Other explanations
     Fewer searches: ruled out, impressions held (-3.1%).
@@ -30,4 +27,4 @@ how to stop a dripping tap · last 28 days vs the 28 before
 Also about this search
   Measured  how to stop a dripping tap
     "how to stop a dripping tap" (desktop): an AI Overview showed in 6 of 6 checks, and it doesn't
-    cite you; it cites diy-advice.example, heatingguide.example, plumbinghelp.example.
+    cite you; it cites plumbinghelp.example, diy-advice.example, heatingguide.example.

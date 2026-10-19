@@ -16,8 +16,9 @@ import type {
   IdCheck, IdCheckName, IsoDate, PeriodEffect, PowerInfo, ScopeDecomposition, SiteChange, SiteChangeImpact, TemplateId, Verdict,
   VerdictReason,
 } from '../core/types.js';
+import type { ScopeComparison } from './scope-test.js';
 import { changeSummary } from './site-change.js';
-import { GROUPS, type Group } from './waterfall.js';
+import { GROUPS, remainderShareOf, type Group } from './waterfall.js';
 import { windowsOverlap } from './windows.js';
 
 export const ANALYZER = { name: 'attribute', version: '1' } as const;
@@ -81,13 +82,21 @@ export interface ScopeFacts {
   /** Named units only: impression-weighted positions and click rates per window. */
   pb: number | null;
   pc: number | null;
+  /** Every impression, hidden searches included: the page-level average position per window. */
+  pbAll?: number | null;
+  pcAll?: number | null;
   ctrB: number | null;
   ctrC: number | null;
   /** Distinct searches whose average position moved in the direction of the change (by at least 0.5). */
   movedSearches: number;
-  /** Share of the scope's same-direction samePos held by checked searches, and by uncited AI Overview searches. */
+  /**
+   * Share of the scope's same-direction samePos held by checked searches, and by uncited AI Overview
+   * searches (a checked search's other device takes the checked device's status).
+   */
   checkedShare: number;
   aioUncitedShare: number;
+  /** This scope's part of the per-search AI Overview loss estimates (5.11.4), or null when none applies. */
+  aioAttributed?: number | null;
   /** Queries with at least one SERP check, and of those how many showed an AI Overview. */
   checkedQueries: number;
   aioQueries: number;
@@ -99,9 +108,13 @@ export interface ScopeFacts {
   topSegment: string;
   /** Last year's impression change over the seasonal windows, when known. */
   yoy: number | null;
-  /** p (bootstrap) and q (BH family 2; for the site the headline's own p). */
+  /** p (closed-form period comparison) and q (BH family 2; for the site the headline's own p). */
   p: number | null;
   q: number | null;
+  /** The scope total's period comparison (counting noise plus period-to-period variance). */
+  comparison?: ScopeComparison;
+  /** Clicks per page in each window (every page of the site), for a site change's attributable share. */
+  pageClicks?: Map<string, { b: number; c: number }>;
   floorsMet: boolean;
   delta: number;
   phi: number;
@@ -172,6 +185,7 @@ export function causeForScope(s: ScopeFacts, ctx: SynthesisContext): CauseResult
   const groups = significantGroups(d, s.groupCi);
   const g = groupValues(d.bars);
   const dir = direction(d.deltaClicks);
+  const rem = remainderShareOf(d);
   const out: CauseResult = { cause: 'unknown', template: 'cause_unknown', groups, ambiguous: false, slots: {}, related: { siteChanges: [], findings: [] }, impact: null, usesCurve: false };
   const changeDate = latestChangePoint(s, ctx)?.date ?? ctx.windows.current[0];
 
@@ -192,14 +206,29 @@ export function causeForScope(s: ScopeFacts, ctx: SynthesisContext): CauseResult
     out.cause = 'rank';
     out.template = 'ranking';
     out.usesCurve = true;
-    out.slots = { pb: s.pb ?? 0, pc: s.pc ?? 0, n: s.movedSearches, lo: Math.min(Math.abs(ci[0]), Math.abs(ci[1])), hi: Math.max(Math.abs(ci[0]), Math.abs(ci[1])), direction: dir };
+    // Mostly searches Google doesn't name (5.5.3): their average position mixes a changing set of
+    // searches, so the move is only Possible, and the positions quoted are the page-level ones.
+    const hidden = rem.ranking >= 0.5;
+    out.ambiguous = hidden;
+    out.slots = {
+      pb: (hidden ? s.pbAll : s.pb) ?? s.pb ?? 0, pc: (hidden ? s.pcAll : s.pc) ?? s.pc ?? 0, n: s.movedSearches,
+      lo: Math.min(Math.abs(ci[0]), Math.abs(ci[1])), hi: Math.max(Math.abs(ci[0]), Math.abs(ci[1])), direction: dir,
+      ...(hidden ? { hidden_share: rem.ranking } : {}),
+    };
   } else if (groups[0] === 'samePos') {
     out.usesCurve = true;
+    out.ambiguous = rem.samePos >= 0.5;
     // An uncited AI Overview explains a loss at the same spot, never a gain.
     if (ctx.aioDidSignal && s.aioUncitedShare >= 0.5 && d.deltaClicks < 0) {
       out.cause = 'ai_overview';
       out.template = 'aio_not_cited';
       out.slots = { x: ctx.aioDid?.tau ?? 0, lo: ctx.aioDid?.ci95?.[0] ?? 0, hi: ctx.aioDid?.ci95?.[1] ?? 0 };
+      if (s.unit.level !== 'site') {
+        // The size is the site-wide before-and-after estimate, borrowed: say so, give this scope's own
+        // share of it, and rate the cause Possible rather than Estimated.
+        out.ambiguous = true;
+        out.slots = { ...out.slots, scope: s.unit.level, lost: Math.abs(d.deltaClicks), ...(s.aioAttributed != null ? { a: s.aioAttributed } : {}) };
+      }
     } else if (s.checkedShare >= 0.5) {
       out.cause = 'ctr_serp';
       out.template = 'same_spot_checked';
@@ -217,28 +246,6 @@ export function causeForScope(s: ScopeFacts, ctx: SynthesisContext): CauseResult
     out.slots = { pc: s.pc ?? 0 };
   }
 
-  // Override a: a site change in scope whose post window overlaps the current window.
-  const impact = siteChangeInScope(s, ctx, ['site_change', 'both']);
-  if (impact) {
-    const change = ctx.siteChanges.find((c) => c.id === impact.siteChangeId) as SiteChange;
-    out.impact = impact;
-    out.related.siteChanges.push(change.id);
-    const fid = ctx.impactFindingIds.get(change.id);
-    if (fid) out.related.findings.push(fid);
-    out.ambiguous = out.ambiguous || impact.controlFallback || change.source === 'annotation';
-    if (impact.synthesis === 'site_change') {
-      out.cause = 'site_change';
-      out.template = 'real_site_change';
-      out.slots = siteChangeSlots(s, change, impact, dir, ctx.impactSlots?.get(change.id));
-    } else {
-      const days = seenDays(change);
-      const upd = eventsOverlapping(ctx.events, [days[0] ?? ptDate(change.deployed.to), ctx.dataThrough], ['core', 'spam'])[0];
-      out.cause = 'mixed';
-      out.template = 'mixed';
-      out.slots = { a: 'site_change', b: upd?.title ?? 'google_update', x: 1 };
-    }
-    return out;
-  }
   // Override b: a change point on this scope near the current window that overlaps a core or spam update.
   const cp = ctx.changePoints
     .filter((c) => sameUnit(c.unit, s.unit) && c.date >= addDays(ctx.windows.current[0], -14) && c.date <= ctx.dataThrough)
@@ -250,6 +257,7 @@ export function causeForScope(s: ScopeFacts, ctx: SynthesisContext): CauseResult
     const google = siteChangeInScope(s, ctx, ['google']);
     out.cause = 'google_update';
     out.usesCurve = false;
+    out.ambiguous = false;
     if (google) {
       const change = ctx.siteChanges.find((c) => c.id === google.siteChangeId);
       out.template = 'real_google';
@@ -261,7 +269,68 @@ export function causeForScope(s: ScopeFacts, ctx: SynthesisContext): CauseResult
       out.slots = { date: cp.date, n_days: nDays, update: ov.title, level: 'low', direction: dir };
     }
   }
+
+  // Override a: a site change in scope whose post window overlaps the current window, gated on the
+  // change's attributable share of this scope's change (5.12 step 3a). A minor edit on two pages
+  // must not be blamed for a site-wide drop that a Google update or demand explains.
+  const impact = siteChangeInScope(s, ctx, ['site_change', 'both']);
+  if (!impact) return out;
+  const change = ctx.siteChanges.find((c) => c.id === impact.siteChangeId) as SiteChange;
+  const share = attributableShare(s, change, impact);
+  if (share !== null && share < MIXED_SHARE) return out;
+  const before = { cause: out.cause, groups: out.groups };
+  out.impact = impact;
+  out.related.siteChanges.push(change.id);
+  const fid = ctx.impactFindingIds.get(change.id);
+  if (fid) out.related.findings.push(fid);
+  out.ambiguous = out.ambiguous || impact.controlFallback || change.source === 'annotation';
+  if (share !== null && share < OWN_SHARE) {
+    // A real part, but not most of it: name both, the change first.
+    const b: Cause = before.cause === 'unknown' || before.cause === 'mixed' ? 'unknown' : before.cause;
+    const other = b !== 'unknown' && before.groups.length === 1 ? Math.abs(g[before.groups[0]]) / Math.abs(d.deltaClicks) : 0;
+    out.cause = 'mixed';
+    out.template = 'mixed';
+    out.ambiguous = true;
+    out.slots = { a: 'site_change', b, x: Math.min(1, share + other) };
+    return out;
+  }
+  if (impact.synthesis === 'site_change') {
+    out.cause = 'site_change';
+    out.template = 'real_site_change';
+    out.slots = siteChangeSlots(s, change, impact, dir, ctx.impactSlots?.get(change.id));
+  } else {
+    const days = seenDays(change);
+    const upd = eventsOverlapping(ctx.events, [days[0] ?? ptDate(change.deployed.to), ctx.dataThrough], ['core', 'spam'])[0];
+    out.cause = 'mixed';
+    out.template = 'mixed';
+    out.slots = { a: 'site_change', b: upd?.title ?? 'google_update', x: 1 };
+  }
   return out;
+}
+
+/** A site change is the scope's cause when it accounts for at least half of the change; a named part from a quarter. */
+const OWN_SHARE = 0.5;
+const MIXED_SHARE = 0.25;
+
+/**
+ * The change's attributable share of a scope's click change: over the changed pages in the scope,
+ * clicks after minus clicks before times (1 + the untouched pages' change), divided by the scope's
+ * change. That keeps movement the changed pages would have had anyway (a core update hitting them
+ * too) out of the change's part. Opposite sign or no change gives 0; no page totals gives null
+ * (an older caller: the override applies as before).
+ */
+export function attributableShare(s: ScopeFacts, change: SiteChange, impact: SiteChangeImpact): number | null {
+  if (!s.pageClicks) return null;
+  const dC = s.decomposition.deltaClicks;
+  if (dC === 0) return 0;
+  const k = 1 + (impact.controlChange ?? 0);
+  let attr = 0;
+  for (const url of new Set(change.touched.map((t) => t.url))) {
+    if (!s.pages.has(url)) continue;
+    const t = s.pageClicks.get(url);
+    if (t) attr += t.c - t.b * k;
+  }
+  return Math.sign(attr) === Math.sign(dC) ? attr / dC : 0;
 }
 
 function sameUnit(a: AnalysisUnit, b: AnalysisUnit): boolean {
@@ -419,12 +488,19 @@ function verdictTemplate(
 ): { template: TemplateId; slots: Record<string, string | number> } {
   const delta = s.decomposition.deltaClicks;
   const pct = v.estimate ?? (s.decomposition.baseClicks > 0 ? delta / s.decomposition.baseClicks : 0);
+  const range: Record<string, number> = v.ci95 && Number.isFinite(v.ci95[0]) && Number.isFinite(v.ci95[1]) ? { ci_lo: v.ci95[0], ci_hi: v.ci95[1] } : {};
   if (v.real === 'signal') {
-    const slots = { ...cause.slots };
+    const slots: Record<string, string | number> = { ...cause.slots, delta: s.delta };
     if ('level' in slots) slots.level = levelFor(v.real, confidence);
+    // Real, but the estimate is below the size we flag: the range says how big it may be (5.8).
+    if (v.estimate !== null && Math.abs(v.estimate) < s.delta && range.ci_lo !== undefined) Object.assign(slots, { size_pct: v.estimate, size_lo: range.ci_lo, size_hi: range.ci_hi });
     return { template: cause.template, slots };
   }
-  if (v.real === 'noise') return { template: 'noise', slots: v.freq !== null ? { pct, freq: v.freq } : { pct } };
+  if (v.real === 'noise') {
+    // The wobble frequency only reads true when the range contains 0 (an ordinary swing).
+    const ordinary = v.reason === 'noise_bounded' && !excludesZero(v.ci95);
+    return { template: 'noise', slots: { pct, delta: s.delta, verdict_reason: v.reason, ...range, ...(ordinary && v.freq !== null ? { freq: v.freq } : {}) } };
+  }
   if (v.real === 'underpowered') {
     const slots: Record<string, string | number> = {
       cpw: s.decomposition.baseClicks / (ctx.windowDays / 7),
@@ -435,6 +511,8 @@ function verdictTemplate(
     };
     if (s.impressions) {
       slots.impr_pct = s.impressions.tau;
+      slots.impr_base = s.baseImpressions;
+      slots.impr_cur = s.curImpressions;
       slots.impr_real = s.impressions.real;
       if (s.impressions.reason) slots.impr_reason = s.impressions.reason;
     }
@@ -444,7 +522,7 @@ function verdictTemplate(
   return { template: 'cant_separate', slots: { date: latestChangePoint(s, ctx)?.date ?? ctx.windows.current[0], check } };
 }
 
-function evidenceFor(s: ScopeFacts, ctx: SynthesisContext, B: number | null): EvidenceRef[] {
+function evidenceFor(s: ScopeFacts, ctx: SynthesisContext, absCi: [number, number] | null): EvidenceRef[] {
   const d = s.decomposition;
   const pos = s.pb !== null && s.pc !== null ? `, position ${s.pb.toFixed(1)} -> ${s.pc.toFixed(1)}` : '';
   const ev: EvidenceRef[] = [{
@@ -454,12 +532,12 @@ function evidenceFor(s: ScopeFacts, ctx: SynthesisContext, B: number | null): Ev
     key: { from: ctx.windows.baseline[0], to: ctx.dataThrough },
     summary: `Search Console: ${int(d.baseClicks)} -> ${int(d.curClicks)} clicks, ${int(s.baseImpressions)} -> ${int(s.curImpressions)} impressions${pos}`,
   }];
-  if (d.ci95?.total && B) {
+  if (absCi) {
     ev.push({
       type: 'statistic',
       confidence: 'INFERRED',
       partition: ctx.gscPartition,
-      summary: `Click waterfall over ${int(d.units)} units, ${int(B)} bootstrap replicates: ${signedInt(d.ci95.total[0])} to ${signedInt(d.ci95.total[1])} clicks`,
+      summary: `Change in clicks ${signedInt(d.deltaClicks)}, 95% range ${signedInt(absCi[0])} to ${signedInt(absCi[1])} (counting noise plus the site's usual swings between periods)`,
     });
   }
   return ev;
@@ -505,6 +583,7 @@ export function scopeFinding(
   let real = v.real;
   let reason = v.reason;
   let fallback = s.kFallback || cause.ambiguous;
+  const absCi = s.comparison?.absoluteCi95 ?? d.ci95?.total ?? null;
   if (cause.impact?.controlFallback) fallback = true;
   let confidence: Confidence = real === 'signal' && cause.cause !== 'unknown' && cause.cause !== 'mixed' && !fallback ? 'INFERRED' : 'AMBIGUOUS';
   let { template, slots } = verdictTemplate(v, cause, s, ctx, confidence);
@@ -535,7 +614,7 @@ export function scopeFinding(
       estimate: v.estimate,
       ci95: v.ci95,
       absolute: d.deltaClicks,
-      absoluteCi95: d.ci95?.total ?? null,
+      absoluteCi95: absCi,
       p: s.p,
       q: s.q,
     },
@@ -548,7 +627,7 @@ export function scopeFinding(
     power,
     template,
     slots,
-    evidence: evidenceFor(s, ctx, o.B),
+    evidence: evidenceFor(s, ctx, absCi),
     alternatives: alternativesFor(s, cause.cause, ctx),
     falsifier: falsifierFor(real, cause.cause, ctx, v.power),
     verify: {
@@ -576,10 +655,16 @@ export function headlineFinding(
 ): Finding {
   const v: ScopeVerdict = { real: clicks.real, reason: clicks.reason, power: clicks.power, failed: [], estimate: clicks.tau, ci95: clicks.ci95, freq: clicks.freq };
   const id = findingId(['headline', 'site', ctx.windows.baseline[0], ctx.dataThrough]);
-  const f = scopeFinding({ ...site, p: clicks.p, q: clicks.p }, v, cause, ctx, { ...o, kind: 'headline', id });
   const delta = clicks.post - clicks.pre;
+  // The range in clicks comes from the same SE as the percent range, centred on the raw change, so
+  // "Show the maths", why and the table's Total row agree with the headline by construction.
+  const absCi: [number, number] | null = Number.isFinite(clicks.se) && clicks.pre > 0 && clicks.post > 0
+    ? [clicks.post * Math.exp(-1.96 * clicks.se) - clicks.pre, clicks.post * Math.exp(1.96 * clicks.se) - clicks.pre]
+    : null;
+  const comparison: ScopeComparison = { estimate: clicks.tau, ci95: clicks.ci95, absoluteCi95: absCi, p: clicks.p, se: clicks.se };
+  const f = scopeFinding({ ...site, p: clicks.p, q: clicks.p, comparison }, v, cause, ctx, { ...o, kind: 'headline', id });
   f.slots = { days: ctx.windowDays, clicks: clicks.post, abs: Math.abs(delta), pct: clicks.tau, direction: direction(delta), ...f.slots };
-  f.effect = { estimate: clicks.tau, ci95: clicks.ci95, absolute: delta, absoluteCi95: site.decomposition.ci95?.total ?? null, p: clicks.p, q: clicks.p };
+  f.effect = { estimate: clicks.tau, ci95: clicks.ci95, absolute: delta, absoluteCi95: absCi, p: clicks.p, q: clicks.p };
   f.priority = findingPriority(f);
   return f;
 }

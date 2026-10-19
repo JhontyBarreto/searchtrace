@@ -1,23 +1,24 @@
-/blog/* · last 28 days vs the 28 before
+Pages under /blog/ · last 28 days vs the 28 before
 
-  Real change · Why: Your change · Estimated
+  Real change · Why: Your change (Estimated)
   This is a real drop, and it most likely came from a change on your site. 27 of the 40 pages you
   changed on 9 Sep 2026 (new titles, for example "How Much to Fix a Radiator | Pipewell Plumbing"
   became "How Much to Fix a Radiator - Pipewell Plumbing") lost clicks. Google recrawled them
   between 9 Sep 2026 and 15 Sep 2026, and the drop started right after. Pages you didn't touch held
-  steady (+2.6%). Confidence: high.
+  steady (+2.6%).
 
   Where the clicks went (estimated, 95% range)
-    Fewer or more searches             -42    (-121 to +29)
-    Ranking                            -12    (-36 to +9)
-    Same spot, different click rate -1,560    (-2,531 to -718)
-    AI Overview citation                +0    (+0 to +0)
-    Appeared or disappeared             -1    (-7 to +0)
-    Unattributed searches                     (included above; private or not reported)
+    More or fewer searches             -42    (-54 to -31)
+    Ranking moved                      -12    (-14 to -10)
+    Same position, fewer clicks     -1,560    (-1,918 to -1,214)
+    Started or stopped showing          -1    (-3 to +0)
+    Total                           -1,615    (-1,951 to -1,269)
+    Google doesn't name the searches behind 36% of your clicks, for privacy. Their clicks are
+    already inside the numbers above; we just can't say which search they came from.
 
   Evidence
-    Measured   Search Console: 13,568 -> 11,953 clicks, 436,692 -> 435,744 impressions, position 6.8 -> 6.8   gsc/2026/10/2026-10-03.ndjson.gz
-    Estimated  Click waterfall over 820 units, 1,000 bootstrap replicates: -2,609 to -781 clicks   gsc/2026/10/2026-10-03.ndjson.gz
+    Measured   Search Console: 13,568 -> 11,953 clicks, 436,692 -> 435,744 impressions, position 6.8
+               -> 6.8
 
   Other explanations
     Fewer searches: ruled out, impressions held (-0.2%).
@@ -25,10 +26,11 @@
     Google update: possible, it overlaps the September 2026 spam update.
     AI Overviews: not checked yet.
 
-  What would prove this wrong: if you undo the change and Google recrawls, clicks should come back
-  within about 4 weeks.
-  Check it yourself: https://search.google.com/search-console/performance/search-analytics?resource_id=sc-domain%3Apipewell-plumbing.example&start_date=20260809&end_date=20261003
+  What would prove this wrong: if you undo the change and clicks still haven't come back about 4
+  weeks after Google recrawls those pages, the change wasn't the cause.
+  Check it yourself: https://search.google.com/search-console/performance/search-analytics?resource_id=sc-domain%3Apipewell-plumbing.example&start_date=20260809&end_date=20261003&page=*%2Fblog%2F
+  (approximate: Search Console filters URLs containing "/blog/")
 
 Also about this section
-  Real change · Possible  /blog/*
-    Clicks on /blog/* dropped by 18% around 15 Sep 2026.
+  Real change  Pages under /blog/
+    Clicks on pages under /blog/ dropped by 18% around 15 Sep 2026.

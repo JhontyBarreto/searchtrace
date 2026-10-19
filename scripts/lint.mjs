@@ -26,6 +26,12 @@ const DANGEROUS_INNER = 'dangerouslySet' + 'Inner' + 'HTML';
 
 const COPY_FILE = 'src/report/copy.ts';
 const WORKFLOW_TMPL = 'assets/workflow.yml.tmpl';
+// searchtrace is not on the npm registry, so nothing may tell anyone to fetch it from there by name.
+const REGISTRY_NPX = [new RegExp('npx\\s+' + 'searchtrace(?![\\w-])'), new RegExp('npx\\s+-y\\s+' + 'searchtrace@')];
+// The GitHub spec must be quoted: zsh with extendedglob reads an unquoted "#" as a glob.
+const UNQUOTED_SPEC = new RegExp('(?<![\'"])' + 'github:JhontyBarreto/searchtrace#');
+// A uses: line pinned to a full commit SHA (optionally with a comment), a local action, or a digest-pinned image.
+const PINNED_USES = /^\s*(?:-\s+)?uses:\s*(?:[\w.-]+\/[\w.-]+(?:\/[\w./-]+)?@[0-9a-f]{40}|\.\/\S+|docker:\/\/\S+@sha256:[0-9a-f]{64})\s*(?:#.*)?$/;
 
 /** @typedef {{ file: string; line: number; col: number; rule: string; message: string }} Hit */
 
@@ -88,6 +94,7 @@ function runBlockLines(lines) {
 }
 
 const isSrcCode = (f) => f.startsWith('src/') && CODE_EXTS.has(extname(f));
+const isWorkflow = (f) => f === WORKFLOW_TMPL || /^\.github\/workflows\/[^/]+\.ya?ml$/.test(f);
 const isCodeOrMarkup = (f) => CODE_EXTS.has(extname(f)) || MARKUP_EXTS.has(extname(f));
 const isDeterministicScope = (f) => isSrcCode(f) && /^src\/(analyze|graph|report|demo)\//.test(f);
 
@@ -154,6 +161,24 @@ function lintRoot(root) {
       }
     }
 
+    // 11. Every action a workflow uses is pinned to a full commit SHA (tags can be moved).
+    if (isWorkflow(file)) {
+      lines.forEach((t, i) => {
+        if (/^\s*(?:-\s+)?uses:/.test(t) && !PINNED_USES.test(t)) {
+          hits.push({ file, line: i + 1, col: t.indexOf('uses:') + 1, rule: 'workflow-uses-sha',
+            message: 'Pin every uses: to a full 40-character commit SHA with a version comment, e.g. actions/checkout@<sha> # v7.0.1.' });
+        }
+      });
+    }
+
+    // 12. Never point anyone at the npm registry name, and always quote the GitHub spec.
+    if (file !== 'scripts/lint.mjs') {
+      hits.push(...scan(file, lines, REGISTRY_NPX, 'no-registry-npx',
+        'searchtrace is installed from GitHub, not the npm registry. Use cli() in src, or the GitHub install in docs.'));
+      hits.push(...scan(file, lines, [UNQUOTED_SPEC], 'quote-github-spec',
+        'Quote the GitHub spec ("github:JhontyBarreto/searchtrace#v1.2.3"): zsh with extendedglob treats an unquoted # as a glob.'));
+    }
+
     // 8. No em or en dashes in text files.
     if (DASH_EXTS.has(extname(file))) {
       hits.push(...scan(file, lines, [new RegExp(`[${EM_DASH}${EN_DASH}]`)], 'no-long-dash',
@@ -204,6 +229,13 @@ function selfTest() {
     put('src/planted/long.ts', `${Array.from({ length: MAX_SRC_LINES + 1 }, (_, i) => `export const v${i} = ${i};`).join('\n')}\n`);
     put(COPY_FILE, "export const s = 'Your CTR fell, a DiD with a p-value says it is statistically significant.';\n");
     put('test/planted.json', `{ "range": "1${EN_DASH}2" }\n`);
+    put('.github/workflows/planted.yml', [
+      'jobs:', '  a:', '    steps:',
+      '      - uses: actions/checkout@v7', '      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0',
+      '      - uses: ./local-action', '',
+    ].join('\n'));
+    put('docs/install.md', ['Run `npx ' + 'searchtrace demo`.', 'Or npx -y ' + 'searchtrace@0.1.0 run.', 'Or npm i -g ' + 'github:JhontyBarreto/searchtrace#v0.1.0.', ''].join('\n'));
+    put('docs/fine.md', ['Run `npx -y "' + 'github:JhontyBarreto/searchtrace#v0.1.0" demo`.', 'Then `searchtrace why`, or npx searchtrace-other.', ''].join('\n'));
     // Allowed exceptions and clean files: these must produce no hits.
     put('src/http/request.ts', 'export const r = (f: typeof fetch) => f;\nexport const go = () => fetch("x");\n');
     put('src/index/db.ts', "import { DatabaseSync } from 'node:sqlite';\nexport const d = DatabaseSync;\n");
@@ -238,6 +270,10 @@ function selfTest() {
       ['new Date() outside the determinism scope is allowed', none('src/core/clock.ts')],
       ['dated new Date(...) and fetch-like names are allowed', none('src/analyze/clean.ts')],
       ['child_process in test/ is allowed', none('test/unit/allowed.test.ts')],
+      ['a tag-pinned uses: is caught', hits.filter((h) => h.file === '.github/workflows/planted.yml' && h.rule === 'workflow-uses-sha').length === 1],
+      ['npx with the registry name is caught', has('docs/install.md', 'no-registry-npx', 2)],
+      ['an unquoted GitHub spec is caught', has('docs/install.md', 'quote-github-spec')],
+      ['a quoted GitHub spec and other packages are allowed', none('docs/fine.md')],
     );
   } finally {
     rmSync(root, { recursive: true, force: true });

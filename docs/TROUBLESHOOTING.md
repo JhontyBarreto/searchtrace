@@ -3,8 +3,10 @@
 Start with:
 
 ```bash
-npx searchtrace doctor
+searchtrace doctor
 ```
+
+(Running it straight from GitHub with npx instead of installing it? Every command and fix line below then starts with `npx -y "github:JhontyBarreto/searchtrace#v0.1.0"` in place of `searchtrace`, and searchtrace prints them that way for you.)
 
 It prints one line per check: `✓` fine, `!` a warning, `✗` a failure (followed by its fix), `i` information. This page explains each message.
 
@@ -23,8 +25,8 @@ It prints one line per check: `✓` fine, `!` a warning, `✗` a failure (follow
 **"searchtrace needs Node 22.13 or newer (you have X). Get it from nodejs.org."**
 searchtrace uses features that arrived in Node 22.13 (the built-in SQLite module among them). Install a current LTS from nodejs.org, or use a version manager.
 
-**"No config.json in ..." / "Run `npx searchtrace setup`, or pass --credentials <file>."**
-There's no setup in this folder yet, or `--dir` points at the wrong place. Run `npx searchtrace setup`, or pass `--dir` with your data folder.
+**"No config.json in ..." / "Run `searchtrace setup` to create one, or pass --dir to point at your searchtrace-data folder."**
+There's no setup in this folder yet, or `--dir` points at the wrong place. Run `searchtrace setup`, or pass `--dir` with your data folder.
 
 **"config.json has problems: ..."**
 A value is out of range or misspelled. The message names the field. Fix it by hand or run setup again, which keeps your other settings.
@@ -34,8 +36,24 @@ Each data folder holds one property. Put the original property back, or use a se
 
 ## Credentials
 
-**"Run `npx searchtrace setup`, or pass --credentials <file>."**
-searchtrace couldn't find any credential. See [SETUP.md](SETUP.md) for the places it looks.
+**"Run `searchtrace setup`, or pass --credentials <file>."**
+searchtrace couldn't find any credential. See [SETUP.md](SETUP.md) for the places it looks. `run`, `setup` and `doctor` all accept `--credentials`.
+
+**"... was not granted Search Console access" / "Request had insufficient authentication scopes."**
+You signed in with a plain `gcloud auth application-default login`. That sign-in only covers Google Cloud, never Search Console, and gcloud's own client can't be given that access. Either use a robot account (`searchtrace setup`, option 1), or sign in with your own OAuth client:
+
+```bash
+gcloud auth application-default login --client-id-file=<your OAuth client json> \
+    --scopes=https://www.googleapis.com/auth/webmasters.readonly,https://www.googleapis.com/auth/cloud-platform
+```
+
+The steps for making that client are in [SETUP.md](SETUP.md), option 2.
+
+**"Google rejected the saved credential (invalid_grant: Token has been expired or revoked.)"**
+The sign-in stopped working. The usual causes: your OAuth app is External and still in Testing, which expires sign-ins after 7 days; you changed your Google password or revoked access; or the OAuth client was deleted. Run the gcloud command above again, publish the OAuth app to Production (see [SETUP.md](SETUP.md)), or switch to a robot account, whose key doesn't expire.
+
+**"... requires a quota project, which is not set by default."**
+Some user credentials need a project to bill API quota to. Run `gcloud auth application-default set-quota-project <your project id>`, set `auth.quotaProject` in `config.json`, or set the `GOOGLE_CLOUD_QUOTA_PROJECT` environment variable. searchtrace sends it as the `x-goog-user-project` header only when one of these is set.
 
 **"Google wants you to sign in again."**
 Your Google account needs a fresh sign-in (Google calls this `invalid_rapt`). Run:
@@ -61,11 +79,11 @@ Your key file is inside the data folder or inside a git repository, where it cou
 **"Add <robot email> as a user on <property> in Search Console > Settings > Users and permissions."**
 The credential works but can't see your property. Add the email shown as a user with Full permission. Only an owner can add users. It can take a minute to apply.
 
-**"You typed seoengico.com; your property is sc-domain:seoengico.com."** (with your own site)
+**"You typed example.com; your property is sc-domain:example.com."** (with your own site)
 Search Console treats a Domain property (`sc-domain:example.com`) and a URL-prefix property (`https://www.example.com/`) as different things. Use the exact name the message gives.
 
 **"Change the permission to Full."**
-The robot has Restricted permission, and URL Inspection refused it. Edit the user in Search Console and choose Full. It still can't change anything: searchtrace only requests read access.
+The robot has Restricted permission, and URL Inspection refused it. Edit the user in Search Console and choose Full. It still can't change anything: searchtrace only requests read access. If you can't get Full (an agency given Restricted access by a client, say), set `"inspection": {"enabled": false}` in `config.json`. Index checks then stop, so the daily run no longer fails on them, but reports lose the crawl dates.
 
 **"Search Console: stopped early (quota). Finished days are saved; the rest will be fetched next run."**
 Google's per-site rate limit was hit. Finished days are kept and the rest are fetched next time. The run still exits 0.
@@ -102,16 +120,36 @@ Use the API login and API password from your DataForSEO dashboard, not your webs
 Not an error. Your site doesn't have enough comparable searches yet to measure an effect, so searchtrace sticks to facts. See [COSTS.md](COSTS.md).
 
 **A budget warning.**
-The monthly or per-run cap was reached, or your balance is too low. Nothing more is posted until there's room. The run still exits 0.
+The monthly or per-run cap was reached, or your balance is too low. Nothing more is posted until there's room. The run still exits 0. DataForSEO's smallest top-up is $50, and it never expires.
+
+**"DataForSEO's own spending limit for this account was reached."**
+That is a limit set in your DataForSEO account, not your balance. Raise it at app.dataforseo.com/api-settings, or wait for it to reset.
+
+**"DataForSEO ... answered 40207 (Your IP is not whitelisted.)"**
+IP whitelisting is on in your DataForSEO account. Add this machine's address, or turn whitelisting off for the GitHub Action, whose runners change IP every run.
+
+**"DataForSEO ... answered 40202 (The rate-limit per minute has been exceeded.)"**
+Another tool on the same DataForSEO account used up the per-minute limit. Nothing was charged; the checks are sent next run.
+
+**"DataForSEO billed $X per check, above the $0.0012 searchtrace plans with; posting stopped at the cap."**
+DataForSEO charged more than expected. searchtrace sends a small first batch each run, notices the real price and sizes the rest from it, so the cap still holds. Later runs plan with the higher price.
+
+**"DataForSEO had no result for N checks (40102 No Search Results.); they won't be retried."**
+Google showed no results for those searches when DataForSEO checked. They're settled and never fetched again.
+
+**"DataForSEO's task list was too long to read in full ..."**
+The DataForSEO account is shared with a busy tool. searchtrace reads the newest tasks first and stops after about a minute. Your own records still count every check this folder paid for; a check it can't confirm stays reserved (never sent twice), and is counted as spent once its week is over.
 
 ## graphify
 
-**"i graphify not found." / "Optional: pipx/uv install graphifyy to ask your history in Claude or Cursor."**
-graphify is optional. Install it with `uv tool install graphifyy` or `pipx install graphifyy` if you want to question your history in Claude or Cursor.
+**"i Optional: graphify is not installed."**
+graphify is optional. Install it with `uv tool install --force "graphifyy[mcp]"` (or `pipx install --force "graphifyy[mcp]"`) if you want to question your history in Claude or Cursor.
 
-**"! graphify found but its MCP server is not installed."**
-Install the extra with `uv tool install --force "graphifyy[mcp]"`. Doctor then prints the exact `claude mcp add` command for your machine. See [GRAPHIFY.md](GRAPHIFY.md).
+**"i Optional: graphify is installed but not its MCP server."**
+Install the extra with `uv tool install --force "graphifyy[mcp]"`. The `--force` matters when graphify is already installed without it. Doctor then prints the exact `claude mcp add` command for your machine. See [GRAPHIFY.md](GRAPHIFY.md).
 
 ## Still stuck?
 
-Open an issue at https://github.com/JhontyBarreto/searchtrace/issues with the output of `npx searchtrace doctor --json`. Doctor's output never includes keys, but check it before posting anyway.
+Open an issue at https://github.com/JhontyBarreto/searchtrace/issues with the output of `searchtrace doctor --share` (or `doctor --json --share`). `--share` swaps your site, robot email, Cloud project, folders and DataForSEO balance for placeholders, while keeping whether your property is a Domain (`sc-domain:`) or URL-prefix one, which is what most setup problems are about. Keys never appear in doctor's output, but read it before posting anyway.
+
+Found a security problem? Please don't open a public issue; see [SECURITY.md](../.github/SECURITY.md).

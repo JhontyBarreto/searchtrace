@@ -282,7 +282,7 @@ describe('scopes and bootstrap (5.5.4, 5.5.5)', () => {
       { unit: { level: 'page', key: 'https://x.example/blog/post-0', label: '/blog/post-0' }, members: all.filter((k) => units[k].key.page === 'https://x.example/blog/post-0') },
     ];
     const run = (): ReturnType<typeof bootstrapScopes> =>
-      bootstrapScopes(model, units, scopes, { B: 200, curve, rng: testRng('boot'), scopeRng: (s) => testRng(`boot:${s.unit.key}`), phi: 1.3 });
+      bootstrapScopes(model, units, scopes, { B: 200, curve, rng: testRng('boot'), phi: 1.3 });
     const boots = run();
     expect(run()).toEqual(boots);
     scopes.forEach((spec, s) => {
@@ -299,6 +299,25 @@ describe('scopes and bootstrap (5.5.4, 5.5.5)', () => {
     expect(site.bars.samePos).toBeLessThan(0);
     expect(boots[0].groupCi.samePos[1]).toBeLessThan(0);
     expect(site.pTotal).toBeLessThan(0.05);
+  });
+
+  it('never resamples units: a census scope total carries counting noise only (Poisson x sqrt(phi))', () => {
+    // Every scope holds all of its units, so the total's range is the Poisson range of Cc - Cb
+    // inflated by sqrt(phi); curve redraws move the split, never the total. Resampling units (the
+    // old rule for 30+ units) added the spread of real effects across units and widened this range.
+    const { input: inp, curve } = syntheticSite();
+    const model = buildUnits(inp);
+    const units = decomposeUnits(model, curve);
+    const all = units.map((_, k) => k);
+    const spec: ScopeSpec = { unit: { level: 'site', key: 'site', label: 'Whole site' }, members: all };
+    expect(all.length).toBeGreaterThanOrEqual(30);
+    const phi = 1.3;
+    const [boot] = bootstrapScopes(model, units, [spec], { B: 1000, curve, rng: testRng('census'), phi });
+    const d = scopeDecomposition(spec, units, boot);
+    const [lo, hi] = d.ci95?.total as [number, number];
+    const expectedHalf = 1.96 * Math.sqrt(phi * (d.baseClicks + d.curClicks));
+    expect((hi - lo) / 2).toBeGreaterThan(0.85 * expectedHalf);
+    expect((hi - lo) / 2).toBeLessThan(1.15 * expectedHalf);
   });
 
   it('B is reduced so cells x B stays within 3e8, never below 200 unless configured lower', () => {

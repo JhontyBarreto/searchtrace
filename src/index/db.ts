@@ -4,10 +4,13 @@
 // folder. A schema change bumps SCHEMA_VERSION, which drops every table and lets the next
 // sync reload from scratch. A corrupt index file is deleted and rebuilt the same way.
 // bin.ts drops the SQLite ExperimentalWarning before this module is first imported.
-import { mkdirSync, rmSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { IndexDb } from '../core/types.js';
+import { StError } from '../core/errors.js';
+import type { DataStore, IndexDb } from '../core/types.js';
+import { pidAlive } from '../store/lock.js';
 import { createIndexReader } from './queries.js';
 import { syncIndex } from './sync.js';
 
@@ -74,12 +77,20 @@ function userVersion(db: SqlDb): number {
   return Number(row?.user_version ?? 0);
 }
 
-/** Drops every table and index, then creates the current schema. */
+/**
+ * Drops every table and index, then creates the current schema. Under BEGIN IMMEDIATE, with the
+ * version checked again inside: two processes opening a missing index at once must not both
+ * rebuild (the second would fail on "table already exists").
+ */
 function rebuild(db: SqlDb): void {
+  db.exec('BEGIN IMMEDIATE');
+  if (userVersion(db) === SCHEMA_VERSION) {
+    db.exec('COMMIT');
+    return;
+  }
   const objects = db
     .prepare("SELECT type, name FROM sqlite_master WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite_%'")
     .all() as { type: string; name: string }[];
-  db.exec('BEGIN');
   try {
     for (const o of objects.filter((x) => x.type === 'table')) db.exec(`DROP TABLE IF EXISTS "${o.name.replace(/"/g, '""')}"`);
     db.exec(SCHEMA);
@@ -101,21 +112,84 @@ function openRaw(path: string): SqlDb {
   return db;
 }
 
-/** ':memory:' allowed. A corrupt or unreadable index file is deleted and rebuilt. */
+/** SQLITE_CORRUPT and SQLITE_NOTADB: the file itself is damaged. Anything else (busy, locked) is not. */
+function isCorrupt(e: unknown): boolean {
+  const x = e as { errcode?: unknown; message?: unknown };
+  const code = typeof x?.errcode === 'number' ? x.errcode & 0xff : null;
+  return code === 11 || code === 26 || /malformed|not a database|file is encrypted/i.test(String(x?.message ?? ''));
+}
+
+const SYNC_LOCK_STALE_MS = 30 * 60_000;
+const SYNC_LOCK_WAIT_MS = 15 * 60_000;
+
+/**
+ * Serialises syncs of one index file across processes (`searchtrace why` while a run loads the
+ * index, two runs, a dry run): a short-lived lock file next to the index, created exclusively,
+ * reclaimed when its process is gone or it is older than 30 minutes. A waiter syncs after the
+ * holder finishes, when there is little left to load.
+ */
+async function withSyncLock<T>(path: string, fn: () => Promise<T>, sleep: (ms: number) => Promise<void>): Promise<T> {
+  if (path === ':memory:') return fn();
+  const lock = `${path}.lock`;
+  const host = hostname();
+  const started = Date.now();
+  for (;;) {
+    try {
+      const fd = openSync(lock, 'wx', 0o600);
+      try {
+        writeSync(fd, `${JSON.stringify({ pid: process.pid, host, at: new Date().toISOString() })}\n`);
+      } finally {
+        closeSync(fd);
+      }
+      break;
+    } catch (e) {
+      if ((e as { code?: string }).code !== 'EEXIST') throw e;
+    }
+    let live = true;
+    try {
+      const info = JSON.parse(readFileSync(lock, 'utf8')) as { pid?: unknown; host?: unknown };
+      const age = Date.now() - statSync(lock).mtimeMs;
+      live = age < SYNC_LOCK_STALE_MS && (info.host !== host || pidAlive(Number(info.pid)));
+    } catch {
+      // half-written or vanished: treat as stale only if it is old
+      try {
+        live = Date.now() - statSync(lock).mtimeMs < 5_000;
+      } catch {
+        live = false;
+      }
+    }
+    if (!live) {
+      rmSync(lock, { force: true });
+      continue;
+    }
+    if (Date.now() - started > SYNC_LOCK_WAIT_MS) {
+      throw new StError('lock_held', 'Another searchtrace process has been loading the index for a long time.', `Wait for it to finish, or delete ${lock} if it crashed.`);
+    }
+    await sleep(200);
+  }
+  try {
+    return await fn();
+  } finally {
+    rmSync(lock, { force: true });
+  }
+}
+
+/** ':memory:' allowed. A corrupt index file is deleted and rebuilt; a busy one is never deleted. */
 export async function openIndex(path: string): Promise<IndexDb> {
   let db: SqlDb;
   try {
     db = openRaw(path);
   } catch (e) {
-    if (path === ':memory:') throw e;
+    if (path === ':memory:' || !isCorrupt(e)) throw e;
     for (const suffix of ['', '-wal', '-shm', '-journal']) rmSync(`${path}${suffix}`, { force: true });
     db = openRaw(path);
   }
   const reader = createIndexReader(db);
   let closed = false;
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
   return {
     ...reader,
-    sync: (store) => syncIndex(db, store),
+    sync: (store: DataStore) => withSyncLock(path, () => syncIndex(db, store), sleep),
     close: () => {
       if (closed) return;
       closed = true;

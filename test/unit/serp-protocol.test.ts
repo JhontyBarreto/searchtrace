@@ -80,7 +80,8 @@ describe('posting protocol (test 60)', () => {
     const r1 = await runOnce(w, c);
     expect(r1.post.status).toBe('ok');
     expect(r1.post.rows).toBe(150);
-    expect(w.dfs.postCalls).toBe(2); // batches of 100
+    // A 10-check price probe first, then batches of 100 (the probe keeps a price rise from overspending a whole batch).
+    expect(w.dfs.postCalls).toBe(3);
     const posted1 = (await spend(w.store)).filter((e) => e.type === 'posted');
     expect(posted1).toHaveLength(150);
     expect(posted1.every((e) => e.type === 'posted' && e.tag.startsWith(ourTagPrefix(TEST_PROPERTY)))).toBe(true);
@@ -95,7 +96,7 @@ describe('posting protocol (test 60)', () => {
     expect(r3.collect?.rows ?? 0).toBe(0);
     expect(r3.post.rows).toBe(0);
 
-    expect(w.dfs.postCalls).toBe(2);
+    expect(w.dfs.postCalls).toBe(3);
     expect(w.dfs.ours()).toHaveLength(150);
     expectEachTagOnce(w);
     const ev = await spend(w.store);
@@ -138,18 +139,19 @@ describe('posting protocol (test 60)', () => {
     }) as DataStore;
     const r1 = await runOnce(w, cands(40), { store: killed });
     expect(r1.post.status).not.toBe('ok');
-    expect(w.dfs.ours()).toHaveLength(40); // the server created them
+    // The crash hits the first batch, which is the 10-check price probe: the server created those 10.
+    expect(w.dfs.ours()).toHaveLength(10);
     let ev = await spend(w.store);
-    expect(ev.filter((e) => e.type === 'intent')).toHaveLength(40);
+    expect(ev.filter((e) => e.type === 'intent')).toHaveLength(10);
     expect(ev.filter((e) => e.type === 'posted')).toHaveLength(0);
 
     w.clock.advance(5 * 60_000);
     const r2 = await runOnce(w, cands(40), { suffix: 'b0b0' });
-    expect(r2.post.rows).toBe(0);
+    // The 10 are adopted from id_list, never sent again; only the 30 that were never sent go out.
+    expect(r2.post.rows).toBe(30);
     ev = await spend(w.store);
     expect(ev.filter((e) => e.type === 'posted')).toHaveLength(40);
     expect(ev.filter((e) => e.type === 'abandoned')).toHaveLength(0);
-    expect(w.dfs.postCalls).toBe(1);
     expect(w.dfs.ours()).toHaveLength(40);
     expectEachTagOnce(w);
   });
@@ -158,11 +160,12 @@ describe('posting protocol (test 60)', () => {
     const w = world({ at: '2026-10-05T18:00:00Z', post: (n) => (n === 0 ? 'reset_after_send' : 'ok') });
     const r1 = await runOnce(w, cands(30));
     expect(r1.post.status).toBe('partial');
-    expect((await spend(w.store)).filter((e) => e.type === 'unknown')).toHaveLength(30);
-    // Same run day, a minute later: the unknowns are reserved, not re-sent.
+    // The lost answer was the 10-check probe's; posting stopped there.
+    expect((await spend(w.store)).filter((e) => e.type === 'unknown')).toHaveLength(10);
+    // Same run day, a minute later: the unknowns are found and adopted, never re-sent; the other 20 go out.
     w.clock.advance(60_000);
     await runOnce(w, cands(30), { suffix: 'b0b0' });
-    expect(w.dfs.postCalls).toBe(1);
+    expect(w.dfs.postCalls).toBe(3);
     expect(w.dfs.ours()).toHaveLength(30);
     expect((await spend(w.store)).filter((e) => e.type === 'posted')).toHaveLength(30);
     expectEachTagOnce(w);
@@ -182,7 +185,8 @@ describe('posting protocol (test 60)', () => {
     const w = world({ at: '2026-10-05T18:00:00Z', post: (n) => (n === 0 ? 'dns' : 'ok') });
     const r1 = await runOnce(w, cands(12));
     expect(r1.post.status).toBe('partial');
-    expect((await spend(w.store)).filter((e) => e.type === 'failed')).toHaveLength(12);
+    // The 10-check probe never left; posting stopped there.
+    expect((await spend(w.store)).filter((e) => e.type === 'failed')).toHaveLength(10);
     expect(w.dfs.ours()).toHaveLength(0);
     w.clock.advance(60_000);
     await runOnce(w, cands(12), { suffix: 'b0b0' });
@@ -190,7 +194,8 @@ describe('posting protocol (test 60)', () => {
     await runOnce(w, cands(12), { suffix: 'c0c0' });
     expect(w.dfs.ours()).toHaveLength(12);
     expectEachTagOnce(w);
-    expect(w.dfs.postCalls).toBe(2);
+    // The failed probe, then a probe of 10 and a batch of the last 2.
+    expect(w.dfs.postCalls).toBe(3);
   });
 
   it('a 500 is unknown; with nothing at DataForSEO it is abandoned after 15 minutes and posted once more', async () => {

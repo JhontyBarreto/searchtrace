@@ -1,9 +1,11 @@
 // readline prompts (TTY only, never with --ci or --yes) and the terminal IO the commands share. Owner: WP-F.
+import { lookup } from 'node:dns/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { StError, ExitCode } from '../core/errors.js';
+import { cli, REPO_URL } from '../core/install.js';
 import { systemClock } from '../core/time.js';
 import type { Clock, Fetch, SecretRegistry } from '../core/types.js';
 
@@ -29,13 +31,20 @@ export interface CliDeps {
   /** null when there is no terminal to ask in. */
   prompter: Prompter | null;
   sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /** DNS for the crawler's private-address check; null in tests that inject fetch. */
+  resolveHost: ((host: string) => Promise<string[]>) | null;
+}
+
+/** Every address host resolves to, in the order the OS gives them. */
+export async function dnsResolve(host: string): Promise<string[]> {
+  return (await lookup(host, { all: true, verbatim: true })).map((a) => a.address);
 }
 
 const noTerminal = (): StError =>
   new StError(
     'config',
     'This step needs an answer, but there is no terminal to ask in.',
-    'Run setup with --yes and the flags you need, for example: npx searchtrace setup --yes --property sc-domain:example.com --credentials key.json',
+    `Run setup with --yes and the flags you need, for example: ${cli('setup --yes --property sc-domain:example.com --credentials key.json')}`,
   );
 
 /** A prompter over the given streams. Each question is asked once; Enter takes the default. */
@@ -110,6 +119,8 @@ export function resolveDeps(partial: Partial<CliDeps> = {}): CliDeps {
     nodeVersion: partial.nodeVersion ?? process.versions.node,
     prompter,
     sleep: partial.sleep ?? sleepReal,
+    // A test that injects fetch gets no real DNS unless it asks for it.
+    resolveHost: partial.resolveHost !== undefined ? partial.resolveHost : partial.fetch ? null : dnsResolve,
   };
 }
 
@@ -122,7 +133,7 @@ export function parseFlags<O extends Options>(args: string[], options: O, comman
   try {
     return parseArgs({ args, options, allowPositionals: true, strict: true });
   } catch (e) {
-    throw new StError('config', (e as Error).message.replace(/^TypeError \[[A-Z_]+\]: /, ''), `Run \`searchtrace ${command} --help\` to see the flags.`);
+    throw new StError('config', (e as Error).message.replace(/^TypeError \[[A-Z_]+\]: /, ''), `Run \`${cli(`${command} --help`)}\` to see the flags.`);
   }
 }
 
@@ -149,7 +160,7 @@ export function printError(e: unknown, deps: CliDeps, secrets?: SecretRegistry):
   }
   const msg = e instanceof Error ? e.message : String(e);
   deps.stderr.write(`searchtrace hit a problem it did not expect: ${clean(msg)}\n`);
-  deps.stderr.write('This is probably a bug. Please report it at https://github.com/JhontyBarreto/searchtrace/issues without pasting any keys.\n');
+  deps.stderr.write(`This is probably a bug. Please report it at ${REPO_URL}/issues without pasting any keys.\n`);
   return ExitCode.ERROR;
 }
 

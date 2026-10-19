@@ -152,7 +152,12 @@ function isPrivateV6(host: string): boolean {
   if (g.slice(0, 7).every((x) => x === 0) && g[7] === 1) return true;              // ::1
   if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff) return isPrivateV4(embeddedV4()); // ::ffff:a.b.c.d
   if (g.slice(0, 6).every((x) => x === 0)) return isPrivateV4(embeddedV4());       // ::a.b.c.d (deprecated)
+  if (g.slice(0, 4).every((x) => x === 0) && g[4] === 0xffff && g[5] === 0) return isPrivateV4(embeddedV4()); // ::ffff:0:a.b.c.d (SIIT)
   if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0)) return isPrivateV4(embeddedV4()); // NAT64
+  if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1) return true;                // local-use NAT64 64:ff9b:1::/48
+  if (g[0] === 0x2002) return isPrivateV4([g[1] >> 8, g[1] & 0xff, g[2] >> 8, g[2] & 0xff]); // 6to4 2002::/16
+  if (g[0] === 0x0100 && g.slice(1, 4).every((x) => x === 0)) return true;         // discard-only 100::/64
+  if ((g[0] & 0xffc0) === 0xfec0) return true;                                     // site-local fec0::/10 (deprecated)
   if ((g[0] & 0xfe00) === 0xfc00) return true;                                     // unique local fc00::/7
   if ((g[0] & 0xffc0) === 0xfe80) return true;                                     // link-local fe80::/10
   if ((g[0] & 0xff00) === 0xff00) return true;                                     // multicast
@@ -164,7 +169,8 @@ function isPrivateV6(host: string): boolean {
  * True for hosts the crawler must never fetch: loopback, private, link-local, reserved and
  * documentation IP ranges (v4 and v6, including mapped and odd numeric forms such as
  * '2130706433' or '0x7f.1'), localhost and internal-only names, single-label names, and
- * anything unparsable. This is a string check; it does not resolve DNS.
+ * anything unparsable. This is a string check; it does not resolve DNS (the crawler checks the
+ * resolved addresses separately, see guardedGet's resolveHost).
  */
 export function isPrivateHost(host: string): boolean {
   let h = String(host).trim().toLowerCase();

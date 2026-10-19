@@ -8,7 +8,11 @@
 import { appendFile } from 'node:fs/promises';
 import { configHash } from '../core/config.js';
 import { StError, ExitCode } from '../core/errors.js';
+import { newRunId } from '../core/ids.js';
+import { rngFor } from '../core/rng.js';
 import { clusterTemplates } from '../core/templates.js';
+import { toInstant } from '../core/time.js';
+import { cli } from '../core/install.js';
 import { siteDomainOf, defaultOrigins, normalizeUrl } from '../core/url.js';
 import type {
   AnalysisOutput, Collector, Config, ErrorCode, ExitCodeName, Finding, GoogleEvent, GraphDoc, IndexReader, PhaseName,
@@ -183,12 +187,28 @@ async function writeFindingsIfChanged(ctx: RunContext, out: AnalysisOutput): Pro
       // unreadable: write a fresh one
     }
   }
-  const rel = layout.perRun('findings', ctx.runId, ctx.startedAt);
+  const rel = await findingsPartitionPath(ctx);
   await ctx.store.writePartition(rel, {
     kind: 'findings', schema: 1, property: ctx.config.property, toolVersion: ctx.toolVersion, runId: ctx.runId,
-    fetchedAt: ctx.startedAt, day: out.dataThrough,
+    fetchedAt: toInstant(ctx.clock.now()), day: out.dataThrough,
   }, out.findings);
   return rel;
+}
+
+/**
+ * This run's findings partition, or, when this run already wrote one (the re-analysis after
+ * --wait collected AI Overview results), a fresh name from the current clock. Run ids start with
+ * their UTC time, so path order stays time order and the newest findings replay last.
+ */
+async function findingsPartitionPath(ctx: RunContext): Promise<string> {
+  const first = layout.perRun('findings', ctx.runId, ctx.startedAt);
+  if (!(await ctx.store.exists(first))) return first;
+  for (let n = 1; n < 1000; n++) {
+    const id = newRunId(ctx.clock, rngFor(ctx.runId, `findings-partition|${n}`));
+    const rel = layout.perRun('findings', id, toInstant(ctx.clock.now()));
+    if (!(await ctx.store.exists(rel))) return rel;
+  }
+  throw new StError('internal', 'Could not find a free name for the findings partition.');
 }
 
 function parseGraph(text: string | null): GraphDoc | null {
@@ -217,7 +237,11 @@ interface RunState {
   out: AnalysisOutput | null;
   reportPath: string | null;
   graphPath: string | null;
+  /** The index failed to load even after a retry: analysis still runs, but nothing it says is saved. */
+  indexBroken?: boolean;
 }
+
+const INDEX_BROKEN_NOTE = "The search index didn't load completely, so this run's findings were not saved and the last report was kept.";
 
 function summary(ctx: RunContext, st: RunState, plan: PlanLine[] | null): RunSummary {
   return {
@@ -358,9 +382,19 @@ async function fullRun(ctx: RunContext, o: PipelineInput): Promise<RunSummary> {
     return r;
   };
   const on = o.onPhase;
+  // An index load that fails is tried once more (a second sync starts clean). If it still fails,
+  // the run goes on but saves no findings, report or graph built on a half-loaded index.
+  const syncWithRetry = async (onPhaseFn?: (n: PhaseName) => void): Promise<PhaseResult> => {
+    const r = await boundary(ctx, 'index', () => syncPhase(ctx), onPhaseFn);
+    if (r.status !== 'failed') return r;
+    const again = await boundary(ctx, 'index', () => syncPhase(ctx));
+    if (again.status !== 'failed') return { ...again, notes: [...again.notes, 'Loaded on the second try.'] };
+    st.indexBroken = true;
+    return { ...r, notes: [...r.notes, INDEX_BROKEN_NOTE] };
+  };
   // A re-sync after a collector only shows in the summary when it fails.
   const resync = async (): Promise<void> => {
-    const r = await boundary(ctx, 'index', () => syncPhase(ctx));
+    const r = await syncWithRetry();
     if (r.status === 'failed') push(r);
   };
   const f = ctx.flags;
@@ -381,7 +415,7 @@ async function fullRun(ctx: RunContext, o: PipelineInput): Promise<RunSummary> {
       authError = g.error;
     }
     const needGoogle = (): void => {
-      if (!ctx.google) throw authError ?? new StError('auth', 'No Google credential is available.', 'Run `npx searchtrace setup`, or pass --credentials <file>.');
+      if (!ctx.google) throw authError ?? new StError('auth', 'No Google credential is available.', `Run \`${cli('setup')}\`, or pass --credentials <file>.`);
     };
 
     // The updates collector decides for itself (plan.skip): offline it fetches nothing but still
@@ -393,7 +427,7 @@ async function fullRun(ctx: RunContext, o: PipelineInput): Promise<RunSummary> {
         needGoogle();
         return collect(ctx, gscCollector);
       }, on));
-    push(await boundary(ctx, 'index', () => syncPhase(ctx), on));
+    push(await syncWithRetry(on));
 
     if (f.offline) push(skippedPhase('crawl', ctx, 'Offline: pages not checked.'));
     else if (!cfg.crawl.enabled) push(skippedPhase('crawl', ctx, 'Page snapshots are turned off in config.json.'));
@@ -419,7 +453,7 @@ async function fullRun(ctx: RunContext, o: PipelineInput): Promise<RunSummary> {
       if (r.status !== 'skipped' && r.status !== 'failed') await resync();
     }
 
-    push(await boundary(ctx, 'analyze', () => analyzePhase(ctx, st, { write: true }), on));
+    push(await boundary(ctx, 'analyze', () => analyzePhase(ctx, st, { write: !st.indexBroken }), on));
 
     let posted = false;
     if (f.offline) push(skippedPhase('serp_post', ctx, 'Offline: no AI Overview checks posted.'));
@@ -436,8 +470,8 @@ async function fullRun(ctx: RunContext, o: PipelineInput): Promise<RunSummary> {
       posted = r.status !== 'skipped' && r.status !== 'failed' && (r.costUsd > 0 || Object.keys(r.requests).length > 0);
     }
 
-    push(await boundary(ctx, 'report', () => reportPhase(ctx, st, demo), on));
-    push(await boundary(ctx, 'graph', () => graphPhase(ctx, st), on));
+    push(st.indexBroken ? skippedPhase('report', ctx, INDEX_BROKEN_NOTE) : await boundary(ctx, 'report', () => reportPhase(ctx, st, demo), on));
+    push(st.indexBroken ? skippedPhase('graph', ctx, INDEX_BROKEN_NOTE) : await boundary(ctx, 'graph', () => graphPhase(ctx, st), on));
 
     if (posted && f.waitMinutes > 0) {
       const sleep = o.sleep ?? defaultSleep;
@@ -450,7 +484,8 @@ async function fullRun(ctx: RunContext, o: PipelineInput): Promise<RunSummary> {
           break;
         }
         const plan = await serpCollectCollector.plan(ctx).catch(() => null);
-        if (!plan || plan.skip || plan.payload.pendingTaskIds.length === 0) break;
+        // Wait for this run's checks only: an older task that keeps failing must not hold the loop for the whole --wait.
+        if (!plan || plan.skip || (plan.payload.thisRunTaskIds ?? plan.payload.pendingTaskIds).length === 0) break;
         polls.push(await boundary(ctx, 'serp_collect', () => serpCollectCollector.execute(plan, ctx)));
       }
       // One row per step in the summary and the report's run ledger: the polls fold into the
@@ -469,11 +504,13 @@ async function fullRun(ctx: RunContext, o: PipelineInput): Promise<RunSummary> {
         else st.phases.push(r);
         return r;
       };
-      const sync = await boundary(ctx, 'index', () => syncPhase(ctx));
+      const sync = await syncWithRetry();
       if (sync.status === 'failed') push(sync);
-      replace(await boundary(ctx, 'analyze', () => analyzePhase(ctx, st, { write: true })));
-      replace(await boundary(ctx, 'report', () => reportPhase(ctx, st, demo)));
-      replace(await boundary(ctx, 'graph', () => graphPhase(ctx, st)));
+      replace(await boundary(ctx, 'analyze', () => analyzePhase(ctx, st, { write: !st.indexBroken })));
+      if (!st.indexBroken) {
+        replace(await boundary(ctx, 'report', () => reportPhase(ctx, st, demo)));
+        replace(await boundary(ctx, 'graph', () => graphPhase(ctx, st)));
+      }
     }
 
     const result = summary(ctx, st, null);

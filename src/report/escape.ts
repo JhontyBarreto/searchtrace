@@ -21,19 +21,27 @@ export function esc(s: string | number | null | undefined): string {
 
 /**
  * Escapes text for Markdown (GitHub flavoured), including table cells. Escapes <, >, [, ], |,
- * backticks and @ as the spec asks, plus backslash, * and _ so untrusted text cannot add
- * emphasis, links, HTML or mentions. Line breaks become spaces so a value cannot end a table row.
+ * backticks, backslash, * and _ so untrusted text cannot add emphasis, links or HTML, and breaks
+ * GitHub's autolink and mention triggers with markup that leaves nothing in the rendered text (so
+ * a query copied from the page still matches in Search Console):
+ *   "://" becomes "\://" and "www." becomes "www\." (CommonMark escapes that render as ":" and
+ *   "."; GitHub links neither, in any case or after "_" or "(");
+ *   "@" becomes "@<span></span>" (GitHub decodes "&#64;" back into live @mentions and mailto links).
+ * A bare "&" stays as typed unless it would start an entity, so "&num=100" reads as written.
+ * Line breaks become spaces so a value cannot end a table row.
  */
 export function mdEscape(s: string | number | null | undefined): string {
   if (s === null || s === undefined) return '';
   return String(s)
     .replace(/\r\n|\r|\n/g, ' ')
     .replace(/\\/g, '\\\\')
-    .replace(/&/g, '&amp;')
+    .replace(/&(?=#?[A-Za-z0-9]+;)/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/[[\]|`*_~]/g, (ch) => `\\${ch}`)
-    .replace(/@/g, '&#64;');
+    .replace(/:\/\//g, '\\://')
+    .replace(/www\./gi, (m) => `${m.slice(0, 3)}\\.`)
+    .replace(/@/g, '@<span></span>');
 }
 
 /** One CSV cell: quoted when needed, and guarded against spreadsheet formula injection. */

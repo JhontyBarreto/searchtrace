@@ -4,9 +4,10 @@ import { addDays, diffDays } from '../../src/core/time.js';
 import type { ChangePointInput, GoogleEvent, IsoDate, Series } from '../../src/core/types.js';
 import { seasonalSeries } from '../../src/analyze/stats.js';
 import {
-  analyzeChangePoints, bestSplit, cusumTest, eventWindow, optimalPartition, prefixSums, pruneBoundaries,
+  analyzeChangePoints, analyzeChangePointsWith, bestSplit, cusumTest, eventWindow, optimalPartition, prefixSums, pruneBoundaries,
 } from '../../src/analyze/changepoint.js';
-import { DEFAULT_DOW, dowMeans, negBinSeries, poissonSeries, testRng, withStep } from '../helpers/index.js';
+import { localiseOutcome } from '../../src/analyze/localise.js';
+import { DEFAULT_DOW, dowMeans, negBinSeries, normalDraw, poissonSeries, testRng, withStep } from '../helpers/index.js';
 
 const START = '2026-04-05';
 const N = 182;
@@ -292,19 +293,118 @@ describe('analyzeChangePoints', () => {
     };
     let concentrated = 0;
     let topIsBlog = 0;
-    let proportional = 0;
+    let notConcentrated = 0;
+    let calledProportional = 0;
     for (let rep = 0; rep < 40; rep++) {
       // Only /blog/* falls.
       const a = scenario([0.3, 1, 1], rep);
-      if (a && !a.proportional) concentrated++;
+      if (a && localiseOutcome(a) === 'concentrated') concentrated++;
       if (a?.top[0]?.label === '/blog/*') topIsBlog++;
       // Every section falls by the same share.
       const b = scenario([0.5, 0.5, 0.5], rep);
-      if (b?.proportional) proportional++;
+      if (b && localiseOutcome(b) !== 'concentrated') notConcentrated++;
+      if (b?.proportional) calledProportional++;
     }
     expect(concentrated).toBeGreaterThanOrEqual(38);
     expect(topIsBlog).toBeGreaterThanOrEqual(38);
-    expect(proportional).toBeGreaterThanOrEqual(34); // a 5% test: about 2 of 40 reject by chance
+    // A 5% test: about 2 of 40 reject by chance. Not rejecting is no longer read as "in proportion":
+    // at 20 to 30 a day per section the equivalence check rarely passes, which is the honest answer.
+    expect(notConcentrated).toBeGreaterThanOrEqual(34);
+    expect(calledProportional).toBeLessThanOrEqual(notConcentrated);
+  });
+
+  it('tests a segment-only series as a localisation segment but never on its own', () => {
+    const y = poissonSeries(testRng('seg-only'), withStep(dowMeans(START, N, 20), 100, 0.5));
+    const tpl = series('tpl:/:clicks', y, { unit: { level: 'template', key: '/', label: '/' }, segmentsOf: 'site:clicks' });
+    const page = series('page:https://x.example/:clicks', y, { unit: { level: 'page', key: 'https://x.example/', label: '/' } });
+    const both = analyzeChangePoints(input([tpl, page]));
+    expect(new Set(both.changePoints.map((c) => c.seriesId))).toEqual(new Set([tpl.id, page.id]));
+    const once = analyzeChangePointsWith(input([tpl, page]), { segmentOnly: new Set([tpl.id]) });
+    expect(once.changePoints.map((c) => c.seriesId)).toEqual([page.id]);
+  });
+
+  it('judges each change point with its own unit delta and its own test (BH family 1b)', () => {
+    const y = poissonSeries(testRng('own-delta'), withStep(dowMeans(START, N, 30), 90, 0.5));
+    const page = analyzeChangePoints(input([series('page:p', y, { unit: { level: 'page', key: 'https://x.example/p', label: '/p' } })]));
+    expect(page.findings[0].slots.delta).toBe(0.2);
+    const site = analyzeChangePoints(input([series('site:clicks', y, { primary: true })]));
+    expect(site.findings[0].slots.delta).toBe(0.1);
+    // A big step and a small one on the same series get their own p-values, not the series' one.
+    const two = poissonSeries(testRng('two-steps'), dowMeans(START, N, 40).map((m, k) => (k < 60 ? m : k < 130 ? m * 0.5 : m * 0.42)));
+    const out = analyzeChangePoints(input([series('site:clicks', two, { primary: true })]));
+    if (out.changePoints.length >= 2) expect(new Set(out.changePoints.map((c) => c.p)).size).toBeGreaterThan(1);
+    expect(out.changePoints[0].q).toBeGreaterThanOrEqual(out.changePoints[0].p);
+  });
+
+  it('a dip that comes back within 60 days is one temporary change, not two', () => {
+    const means = dowMeans(START, N, 25).map((m, k) => (k >= 80 && k < 115 ? m * 0.4 : m));
+    const out = analyzeChangePoints(input([series('site:clicks', poissonSeries(testRng('dip'), means), { primary: true })]));
+    expect(out.findings).toHaveLength(1);
+    const f = out.findings[0];
+    expect(f.slots.direction).toBe('down');
+    expect(f.slots.back).toBe(addDays(START, 115));
+    expect(f.real).toBe('signal');
+    expect(f.falsifier.key).toBe('record_changes');
+  });
+
+  it('births: new pages are tested only after they appear, reported as one fact, and never shift the q-values of other series', () => {
+    const nulls: Series[] = [];
+    for (let k = 0; k < 40; k++) nulls.push(series(`page:n${k}`, poissonSeries(testRng(`birth-null-${k}`), dowMeans(START, N, 3 + (k % 4))), { unit: { level: 'page', key: `https://x.example/n${k}`, label: `/n${k}` } }));
+    const births = (count: number): Series[] => Array.from({ length: count }, (_, k) => {
+      const at = 40 + 3 * k;
+      const y = poissonSeries(testRng(`birth-${k}`), dowMeans(START, N, 6).map((m, t) => (t < at ? 0 : m)));
+      return series(`page:b${k}`, y, { metric: 'impressions', unit: { level: 'page', key: `https://x.example/b${k}`, label: `/b${k}` } });
+    });
+    const qOf = (out: ReturnType<typeof analyzeChangePoints>): string => JSON.stringify(out.changePoints.filter((c) => c.seriesId.startsWith('page:n')).map((c) => [c.seriesId, c.q]));
+    const none = analyzeChangePoints(input(nulls));
+    const some = analyzeChangePoints(input([...nulls, ...births(10)]));
+    const many = analyzeChangePoints(input([...nulls, ...births(30)]));
+    expect(qOf(some)).toBe(qOf(none));
+    expect(qOf(many)).toBe(qOf(none));
+    // No finding on a birth series claims a ratio change caused by an update; the births are one fact.
+    for (const f of many.findings) if (f.unit.key.includes('/b')) expect(f.cause).not.toBe('google_update');
+    for (const c of many.changePoints.filter((x) => x.seriesId.startsWith('page:b'))) {
+      const k = Number(c.seriesId.slice('page:b'.length));
+      expect(c.date >= addDays(START, 40 + 3 * k + 28)).toBe(true);
+    }
+    const fact = many.findings.find((f) => f.kind === 'notice');
+    expect(fact?.reason).toBe('fact');
+    expect(fact?.slots.appeared).toBe(30);
+    expect(fact?.slots.d1).toBe(addDays(START, 40));
+    // A page with history before the window is not a birth, even when its first window day is empty:
+    // it is tested from the start and its rise is an ordinary change point.
+    const old = poissonSeries(testRng('old-page'), dowMeans(START, N, 6).map((m, t) => (t === 0 ? 0 : t < 60 ? 2 : m)));
+    const hist = [...Array(100).fill(2), ...old];
+    const seasonal = analyzeChangePoints(input([series('page:old', old, { unit: { level: 'page', key: 'https://x.example/old', label: '/old' } })], {
+      historyStart: addDays(START, -100), seasonalValues: { 'page:old': { start: addDays(START, -100), values: hist } },
+    }));
+    expect(seasonal.findings.some((f) => f.kind === 'notice')).toBe(false);
+    expect(seasonal.changePoints.some((c) => c.ratio > 2)).toBe(true);
+  });
+
+  it('wander measured before the window keeps a drifting series from turning into Real changes', () => {
+    // AR(1) level wander (no events) with 300 days of the same wander before the window.
+    let signalsWithHistory = 0;
+    let signalsWithout = 0;
+    for (let rep = 0; rep < 30; rep++) {
+      const rng = testRng(`wander-${rep}`);
+      const len = 300 + N;
+      let x = 0;
+      const lv: number[] = [];
+      for (let t = 0; t < len; t++) {
+        x = 0.95 * x + 0.06 * normalDraw(rng);
+        lv.push(x);
+      }
+      const full = poissonSeries(rng, dowMeans(addDays(START, -300), len, 20).map((m, t) => m * Math.exp(lv[t])));
+      const win = full.slice(300);
+      const base = series('page:w', win, { unit: { level: 'page', key: 'https://x.example/w', label: '/w' } });
+      const withH = analyzeChangePoints(input([base], { historyStart: addDays(START, -300), seasonalValues: { 'page:w': { start: addDays(START, -300), values: full } } }));
+      const without = analyzeChangePoints(input([base]));
+      signalsWithHistory += withH.findings.filter((f) => f.real === 'signal').length;
+      signalsWithout += without.findings.filter((f) => f.real === 'signal').length;
+    }
+    expect(signalsWithHistory).toBeLessThan(signalsWithout);
+    expect(signalsWithHistory).toBeLessThanOrEqual(6);
   });
 
   it('sparse series use weekly mode; series below every floor are not tested', () => {

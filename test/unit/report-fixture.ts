@@ -211,7 +211,7 @@ export function makeAnalysisOutput(o: { xss?: boolean; boring?: boolean } = {}):
     templates: { [pageUrl]: '/blog/*' },
     diagnostics: {
       namedClickShare: 0.19, reconciliation: { byPageClicks: 252, byPropertyClicks: 252 }, truncatedDays: [], revisions: 0,
-      underpoweredUnits: 12, measurementEvents: ['curated-num100'], bootstrapB: { waterfall: 1000 }, brandTokens: ['engico'],
+      underpoweredUnits: 12, measurementEvents: ['curated-num100'], bootstrapB: { waterfall: 1000 }, brandTokens: ['norvico'],
       brandSuggestions: [], historyDays: 490,
     },
   };

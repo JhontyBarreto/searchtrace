@@ -2,6 +2,7 @@
 // Rebuilds the analysis offline from the saved data (no network), then shows the evidence chain.
 import { loadConfig } from '../../core/config.js';
 import { createSecretRegistry } from '../../core/secrets.js';
+import { cli } from '../../core/install.js';
 import type { AnalysisOutput } from '../../core/types.js';
 import { openIndex } from '../../index/db.js';
 import { analyzeIndex } from '../../pipeline/run.js';
@@ -34,7 +35,7 @@ export async function whyCommand(args: string[], partial?: Partial<CliDeps>): Pr
     const dir = resolveDir(v.dir, deps);
     const result = await analyzeDataDir(dir, secrets);
     if (!result) {
-      deps.stderr.write('No finished Search Console days yet, so there is nothing to explain.\nRun `npx searchtrace run` first.\n');
+      deps.stderr.write(`No finished Search Console days yet, so there is nothing to explain.\nRun \`${cli('run')}\` first.\n`);
       return 0;
     }
     if (v.json) {

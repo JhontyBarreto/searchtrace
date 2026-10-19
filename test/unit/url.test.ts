@@ -107,8 +107,10 @@ describe('isPrivateHost', () => {
     '2130706433', '0x7f.1', '017700000001',
     '::1', '[::1]', '::', 'fc00::1', 'fd12:3456::1', 'fe80::1', 'ff02::1', '::ffff:127.0.0.1', '::ffff:10.0.0.1',
     '64:ff9b::7f00:1', '2001:db8::1', 'not a host!',
+    // 6to4 of 127.0.0.1, SIIT-mapped loopback, local-use NAT64, site-local and discard-only.
+    '[2002:7f00:1::]', '2002:c0a8:101::1', '[::ffff:0:7f00:1]', '64:ff9b:1::a00:1', '[fec0::1]', 'fefe::1', '100::1',
   ];
-  const publicHosts = ['example.com', 'www.seoengico.com', '8.8.8.8', '172.32.0.1', '100.128.0.1', '2606:4700:4700::1111', '::ffff:8.8.8.8'];
+  const publicHosts = ['example.com', 'www.seoengico.com', '8.8.8.8', '172.32.0.1', '100.128.0.1', '2606:4700:4700::1111', '::ffff:8.8.8.8', '2002:808:808::1', '100:0:0:1::1'];
 
   it.each(privateHosts)('%s is private', (h) => expect(isPrivateHost(h)).toBe(true));
   it.each(publicHosts)('%s is public', (h) => expect(isPrivateHost(h)).toBe(false));

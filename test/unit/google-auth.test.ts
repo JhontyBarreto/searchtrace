@@ -11,6 +11,8 @@ import { createSecretRegistry } from '../../src/core/secrets.js';
 import type { Config } from '../../src/core/types.js';
 import {
   DEFAULT_TOKEN_URI, READONLY_SCOPE, SITES_URL, authTuning, googleJson, listSites, loadGoogleAuth, type LoadedGoogleAuth,
+  SCOPE_FIX,
+  mapGoogleError,
 } from '../../src/sources/google/auth.js';
 import { fakeFetch, type FakeRequest } from '../helpers/index.js';
 
@@ -175,7 +177,7 @@ describe('loadGoogleAuth', () => {
     const secrets = createSecretRegistry({ ci: false });
     const none = (await loadGoogleAuth({ config: cfg(), env: noHome(), fetch: ff.fetch, secrets }).catch((e: unknown) => e)) as StError;
     expect(none.code).toBe('auth');
-    expect(none.fix).toContain('npx searchtrace setup');
+    expect(none.fix).toContain('Run `searchtrace setup`');
 
     const missing = (await loadGoogleAuth({ config: cfg(), env: noHome(), fetch: ff.fetch, secrets, credentialsOverride: join(dir, 'nope.json') }).catch((e: unknown) => e)) as StError;
     expect(missing.code).toBe('auth');
@@ -252,6 +254,32 @@ describe('Google API calls', () => {
     expect(err.code).toBe('permission');
     expect(err.exit).toBe(3);
     expect(err.fix).toBe('Add user credential as a user on sc-domain:example.com in Search Console > Settings > Users and permissions.');
+  });
+
+  it('403 for missing scopes says the sign-in lacks Search Console access, not "add yourself as a user"', async () => {
+    const ff = fakeFetch([
+      tokenRoute(() => ({ access_token: 'ya29.s-token-value', expires_in: 3600 })),
+      {
+        method: 'GET', url: SITES_URL,
+        reply: { status: 403, body: { error: { code: 403, message: 'Request had insufficient authentication scopes.', status: 'PERMISSION_DENIED', details: [{ reason: 'ACCESS_TOKEN_SCOPE_INSUFFICIENT' }] } } },
+      },
+    ]);
+    const err = (await listSites(await userAuth(ff), ff.fetch).catch((e: unknown) => e)) as StError;
+    expect(err.code).toBe('auth');
+    expect(err.message).toContain('was not granted Search Console access');
+    expect(err.fix).toBe(SCOPE_FIX);
+    expect(err.fix).toContain('--client-id-file=<your OAuth client json>');
+    expect(err.fix).not.toContain('Users and permissions');
+    // The message alone is enough too (older error bodies carry no details).
+    expect(mapGoogleError(403, { error: { message: 'Request had insufficient authentication scopes.' } }, { principal: 'x' }, { what: 'y' }).fix).toBe(SCOPE_FIX);
+  });
+
+  it('refuses a sign-in whose token carries no Search Console scope before any API call', async () => {
+    const ff = fakeFetch([tokenRoute(() => ({ access_token: 'ya29.cloud-only', expires_in: 3600, scope: 'openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/cloud-platform' }))]);
+    const auth = await userAuth(ff);
+    const err = (await auth.headers().catch((e: unknown) => e)) as StError;
+    expect(err.code).toBe('auth');
+    expect(err.fix).toBe(SCOPE_FIX);
   });
 
   it('403 SERVICE_DISABLED gives the activation URL as the fix', async () => {

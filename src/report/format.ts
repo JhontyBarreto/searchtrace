@@ -2,7 +2,21 @@
 //
 // Output is locale-independent so reports are byte-stable on every machine: thousands are
 // separated with commas and minus signs are the ASCII hyphen-minus.
+import { githubSpec } from '../core/install.js';
 import type { Finding, IsoDate } from '../core/types.js';
+
+/**
+ * How reports name the CLI in a command to copy: the pinned GitHub spec through npx. It works
+ * however searchtrace was installed (it is not on the npm registry), and unlike the run summary's
+ * hints it does not depend on how this run was started, so findings.json stays byte-identical.
+ */
+export const CLI = `npx -y ${githubSpec()}`;
+
+/** A full `note` command line, with the date and pages filled in when known. */
+export function noteCommand(o: { date?: string | null; urls?: string | null } = {}): string {
+  return `${CLI} note "what you changed" --date ${o.date ?? 'YYYY-MM-DD'} --urls "${o.urls ?? '/path/*'}"`;
+}
+export const NOTE_COMMAND = noteCommand();
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 

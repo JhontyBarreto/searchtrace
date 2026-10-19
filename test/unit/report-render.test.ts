@@ -58,7 +58,7 @@ describe('HTML and Markdown reports (test 71)', () => {
 
   it('keeps sections in the 6.5 order', () => {
     const order = ['The answer', 'Where the clicks went', 'Timeline', 'Google update scorecard', 'Pages and sections that moved',
-      'Searches that moved', 'Your site changes', "What we checked and what we couldn't", 'What gets smarter next', 'Run ledger'];
+      'Searches that moved', 'Your site changes', "What we checked and what we couldn't", 'What gets smarter next', 'What this run did and cost'];
     let last = -1;
     for (const h of order) {
       const i = Math.max(html.indexOf(`<h2>${h}</h2>`), html.indexOf(`<h2>${h.replace("'", '&#39;')}</h2>`));
@@ -76,7 +76,7 @@ describe('HTML and Markdown reports (test 71)', () => {
     expect(answer).toBeGreaterThan(-1);
     expect(answer).toBeLessThan(r.html.indexOf('Where the clicks went'));
     expect(r.md).toContain('In the last 28 days Google sent you 80 clicks, 9 fewer than the 28 days before (-10%).');
-    expect(r.html).toContain('Page totals 252 clicks, property total 252.');
+    expect(r.html).toContain('Check: your pages add up to the site total across both periods (252 clicks).');
     expect(r.html).toContain('Show the maths');
   });
 

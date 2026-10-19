@@ -7,17 +7,19 @@ import { access, open } from 'node:fs/promises';
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { loadConfig } from '../../core/config.js';
 import { ExitCode, StError } from '../../core/errors.js';
+import { cli, expandHome, toolVersion } from '../../core/install.js';
 import { createSecretRegistry } from '../../core/secrets.js';
 import { ptDate } from '../../core/time.js';
 import { defaultOrigins, siteDomainOf } from '../../core/url.js';
 import type { Config, GoogleAuth, SecretRegistry } from '../../core/types.js';
+import { MIN_COST_PER_CHECK } from '../../sources/dataforseo/budget.js';
 import { requestJson } from '../../http/request.js';
 import { buildBrandMatcher } from '../../analyze/brand.js';
 import { fmtBytes, fmtDate, fmtInt, fmtMoney } from '../../report/format.js';
 import { listSites, loadGoogleAuth } from '../../sources/google/auth.js';
 import { layout } from '../../store/layout.js';
 import { openStore } from '../../store/store.js';
-import { out, parseFlags, printError, resolveDeps, resolveDir, type CliDeps } from '../prompt.js';
+import { parseFlags, printError, resolveDeps, resolveDir, type CliDeps } from '../prompt.js';
 
 export type CheckStatus = 'ok' | 'warn' | 'fail' | 'info';
 export interface Check { status: CheckStatus; area: 'node' | 'config' | 'auth' | 'gsc' | 'inspect' | 'serp' | 'folder' | 'key' | 'graphify' | 'brand'; text: string; fix?: string }
@@ -26,27 +28,38 @@ const MARK: Record<CheckStatus, string> = { ok: '✓', warn: '!', fail: '✗', i
 const RW_SCOPE = 'https://www.googleapis.com/auth/webmasters';
 const INSPECT_URL = 'https://searchconsole.googleapis.com/v1/urlInspection/index:inspect';
 const DFS_USER_DATA = 'https://api.dataforseo.com/v3/appendix/user_data';
-const SETUP_FIX = 'Run `npx searchtrace setup`, or pass --credentials <file>.';
+const SETUP_FIX = `Run \`${cli('setup')}\`, or pass --credentials <file>.`;
+const FULL_FIX = 'Change the permission to Full. If you can\'t, set "inspection": {"enabled": false} in config.json to stop index checks.';
 const MOVE_KEY_FIX = 'Move it to ~/.config/searchtrace/ and update auth.credentialsFile.';
 
 export interface CredentialSource { kind: 'file' | 'env'; label: string; path: string | null }
 
-/** Which credential loadGoogleAuth will pick (4.8 order, without --credentials), for display and the key-location check. */
-export function credentialSource(config: Config, env: Record<string, string | undefined>, home: string, override?: string | null): CredentialSource | null {
-  if (override) return { kind: 'file', label: override, path: override };
-  if (config.auth.credentialsFile) return { kind: 'file', label: config.auth.credentialsFile, path: config.auth.credentialsFile };
+/**
+ * Which credential loadGoogleAuth will pick (4.8 order), for display and the key-location check.
+ * Paths come back expanded ("~/k.json" becomes an absolute path) so later checks see the real file,
+ * and a configured file that doesn't exist is skipped exactly as the loader skips it (on a runner the
+ * laptop's path is missing and the SEARCHTRACE_GOOGLE_KEY secret is used instead).
+ */
+export function credentialSource(config: Config, env: Record<string, string | undefined>, home: string, override?: string | null, cwd = process.cwd()): CredentialSource | null {
+  const abs = (p: string): string => resolve(cwd, expandHome(p, home));
+  if (override) return { kind: 'file', label: abs(override), path: abs(override) };
+  if (config.auth.credentialsFile && existsSync(abs(config.auth.credentialsFile))) {
+    return { kind: 'file', label: config.auth.credentialsFile, path: abs(config.auth.credentialsFile) };
+  }
   const envName = config.auth.credentialsEnv;
   if (env[envName]) return { kind: 'env', label: `the ${envName} environment variable`, path: null };
   const gac = env.GOOGLE_APPLICATION_CREDENTIALS;
-  if (gac) return { kind: 'file', label: gac, path: gac };
-  const adc = process.platform === 'win32' && env.APPDATA
-    ? join(env.APPDATA, 'gcloud', 'application_default_credentials.json')
-    : join(home, '.config', 'gcloud', 'application_default_credentials.json');
+  if (gac && existsSync(abs(gac))) return { kind: 'file', label: gac, path: abs(gac) };
+  const adc = env.CLOUDSDK_CONFIG
+    ? join(env.CLOUDSDK_CONFIG, 'application_default_credentials.json')
+    : process.platform === 'win32' && env.APPDATA
+      ? join(env.APPDATA, 'gcloud', 'application_default_credentials.json')
+      : join(home, '.config', 'gcloud', 'application_default_credentials.json');
   return existsSync(adc) ? { kind: 'file', label: adc, path: adc } : null;
 }
 
 /** The working-tree root (the folder holding .git) that contains path, or null. */
-function gitRootOf(path: string): string | null {
+export function gitRootOf(path: string): string | null {
   let dir = dirname(resolve(path));
   for (let i = 0; i < 64; i++) {
     if (existsSync(join(dir, '.git'))) return dir;
@@ -131,7 +144,7 @@ function isInside(child: string, parent: string): boolean {
 }
 
 /** The graphify executable on PATH and the Python from its shebang, plus whether the MCP extra is installed. */
-export async function findGraphify(env: Record<string, string | undefined>): Promise<{ exe: string; python: string | null; mcp: boolean } | null> {
+export async function findGraphify(env: Record<string, string | undefined>): Promise<{ exe: string; python: string | null; mcp: boolean; mcpExe: string | null } | null> {
   const names = process.platform === 'win32' ? ['graphify.exe', 'graphify.cmd', 'graphify'] : ['graphify'];
   for (const dir of (env.PATH ?? '').split(delimiter).filter(Boolean)) {
     for (const name of names) {
@@ -156,7 +169,9 @@ export async function findGraphify(env: Record<string, string | undefined>): Pro
       } catch {
         python = null;
       }
-      return { exe, python, mcp: python ? hasMcpExtra(python) : false };
+      // graphify 0.9.74 and later install a graphify-mcp entry point next to graphify.
+      const mcpExe = join(dir, process.platform === 'win32' ? 'graphify-mcp.exe' : 'graphify-mcp');
+      return { exe, python, mcp: python ? hasMcpExtra(python) : false, mcpExe: existsSync(mcpExe) ? mcpExe : null };
     }
   }
   return null;
@@ -198,16 +213,30 @@ function dirSize(path: string): number {
   return total;
 }
 
-interface Ctx { deps: CliDeps; dir: string; secrets: SecretRegistry; checks: Check[]; config: Config | null; auth: GoogleAuth | null }
+interface Ctx {
+  deps: CliDeps;
+  dir: string;
+  secrets: SecretRegistry;
+  checks: Check[];
+  config: Config | null;
+  auth: GoogleAuth | null;
+  /** --credentials, resolved against cwd. */
+  credentials: string | null;
+  /** --share: leave the balance out (the rest is scrubbed from the final text). */
+  share: boolean;
+  brandWords: string[];
+}
 
 const add = (c: Ctx, check: Check): void => {
   c.checks.push(check);
 };
 
 async function checkCredential(c: Ctx, cfg: Config): Promise<CredentialSource | null> {
-  const src = credentialSource(cfg, c.deps.env, c.deps.homedir);
+  const src = credentialSource(cfg, c.deps.env, c.deps.homedir, c.credentials, c.deps.cwd);
   try {
-    c.auth = await loadGoogleAuth({ config: cfg, env: c.deps.env, fetch: c.deps.fetch, secrets: c.secrets });
+    c.auth = await loadGoogleAuth({
+      config: cfg, env: c.deps.env, fetch: c.deps.fetch, secrets: c.secrets, ...(c.credentials ? { credentialsOverride: c.credentials } : {}),
+    });
     const from = src?.label ?? c.auth.source;
     add(c, { status: 'ok', area: 'auth', text: `Google credential: ${c.auth.kind}${from ? ` from ${from}` : ''}` });
     if (c.auth.scopes.includes(RW_SCOPE)) {
@@ -231,7 +260,7 @@ async function checkSearchConsole(c: Ctx, cfg: Config, auth: GoogleAuth): Promis
       }
       add(c, { status: 'ok', area: 'gsc', text: `Search Console: can read ${cfg.property} (${site.permissionLevel})` });
       if (site.permissionLevel === 'siteRestrictedUser') {
-        add(c, { status: 'warn', area: 'gsc', text: 'Restricted users may not be allowed to inspect URLs.', fix: 'Change the permission to Full.' });
+        add(c, { status: 'warn', area: 'gsc', text: 'Restricted users may not be allowed to inspect URLs.', fix: FULL_FIX });
       }
       return true;
     }
@@ -265,7 +294,7 @@ async function checkInspection(c: Ctx, cfg: Config, auth: GoogleAuth): Promise<v
       // quota accounting is best effort for doctor
     }
     if (res.status === 403) {
-      add(c, { status: 'fail', area: 'inspect', text: 'URL Inspection: this robot is not allowed to inspect URLs', fix: 'Change the permission to Full.' });
+      add(c, { status: 'fail', area: 'inspect', text: 'URL Inspection: this robot is not allowed to inspect URLs', fix: FULL_FIX });
       return;
     }
     if (res.status === 429) {
@@ -294,8 +323,10 @@ async function checkQuotaAndSpend(c: Ctx, cfg: Config): Promise<void> {
     const today = ptDate(now);
     for (const r of await store.readLedger<{ ptDay?: string; count?: number }>('inspect')) if (r.ptDay === today) usedToday += Number(r.count) || 0;
     const month = now.toISOString().slice(0, 7);
-    for (const r of await store.readLedger<{ type?: string; at?: string; costUsd?: number }>('spend')) {
-      if (r.type === 'posted' && typeof r.at === 'string' && r.at.startsWith(month)) monthSpend += Number(r.costUsd) || 0;
+    for (const r of await store.readLedger<{ type?: string; at?: string; postedAt?: string; costUsd?: number }>('spend')) {
+      // A task adopted from DataForSEO later carries the time it was really posted.
+      const when = typeof r.postedAt === 'string' ? r.postedAt : r.at;
+      if (r.type === 'posted' && typeof when === 'string' && when.startsWith(month)) monthSpend += Number(r.costUsd) || 0;
     }
   } catch {
     // an unreadable ledger shows as zero; the folder check reports the folder itself
@@ -303,10 +334,14 @@ async function checkQuotaAndSpend(c: Ctx, cfg: Config): Promise<void> {
   const budget = Math.min(cfg.inspection.dailyBudget, Math.floor(2000 * cfg.inspection.shareOfPropertyQuota));
   // doctor's own live check counts too, so a day whose budget a run used up can show one over.
   const over = usedToday > budget ? '; the extra ones are doctor\'s own test checks' : '';
-  add(c, { status: 'ok', area: 'inspect', text: `Index checks used today: ${fmtInt(usedToday)} of ${fmtInt(budget)} (2,000 per property, shared with your other tools${over})` });
+  add(c, { status: 'ok', area: 'inspect', text: `Index checks used today: ${fmtInt(usedToday)} of searchtrace's ${fmtInt(budget)} (Google allows 2,000 a day per property, shared with your other tools${over})` });
 
   if (cfg.serp.provider !== 'dataforseo') {
-    add(c, { status: 'info', area: 'serp', text: 'AI Overview checks are off. Run `npx searchtrace setup --dataforseo` to turn them on (usually cents a month).' });
+    add(c, {
+      status: 'info', area: 'serp',
+      text: `AI Overview checks are off. Run \`${cli('setup --dataforseo')}\` to turn them on (paid per check, capped at $1.00 a month by default). ` +
+        "You'll need a DataForSEO account: $1 free to try, then a $50 minimum top-up that never expires.",
+    });
     return;
   }
   const serp = cfg.serp;
@@ -331,10 +366,18 @@ async function checkQuotaAndSpend(c: Ctx, cfg: Config): Promise<void> {
     const balance = res.data?.tasks?.[0]?.result?.[0]?.money?.balance;
     const bal = typeof balance === 'number' && Number.isFinite(balance) ? balance : null;
     const checks = bal !== null && serp.costPerCheckUsd > 0 ? ` about ${fmtInt(Math.floor(bal / serp.costPerCheckUsd))} checks ·` : '';
+    const balanceText = c.share ? 'balance hidden ·' : `${bal === null ? 'balance unknown' : `${fmtMoney(bal)} balance,`}${checks}`;
     add(c, {
       status: bal !== null && bal < serp.costPerCheckUsd ? 'warn' : 'ok', area: 'serp',
-      text: `DataForSEO: ${bal === null ? 'balance unknown' : `${fmtMoney(bal)} balance,`}${checks} cap ${fmtMoney(serp.monthlyBudgetUsd)}/month · used ${fmtMoney(monthSpend)} this month`,
+      text: `DataForSEO: ${balanceText} cap ${fmtMoney(serp.monthlyBudgetUsd)}/month · used ${c.share ? 'amount hidden' : fmtMoney(monthSpend)} this month`,
     });
+    if (serp.costPerCheckUsd < MIN_COST_PER_CHECK) {
+      add(c, {
+        status: 'warn', area: 'serp',
+        text: `serp.costPerCheckUsd is ${serp.costPerCheckUsd}, below the $${MIN_COST_PER_CHECK} a check DataForSEO really charges. searchtrace plans with $${MIN_COST_PER_CHECK} anyway.`,
+        fix: `Set serp.costPerCheckUsd to ${MIN_COST_PER_CHECK} or more in config.json.`,
+      });
+    }
   } catch (e) {
     add(c, { status: 'fail', area: 'serp', text: `DataForSEO: ${c.secrets.redact((e as Error)?.message ?? String(e))}` });
   }
@@ -342,7 +385,7 @@ async function checkQuotaAndSpend(c: Ctx, cfg: Config): Promise<void> {
 
 async function checkFolder(c: Ctx): Promise<void> {
   if (!existsSync(c.dir)) {
-    add(c, { status: 'fail', area: 'folder', text: `Folder ${c.dir} does not exist`, fix: 'Run `npx searchtrace setup` to create it.' });
+    add(c, { status: 'fail', area: 'folder', text: `Folder ${c.dir} does not exist`, fix: `Run \`${cli('setup')}\` to create it.` });
     return;
   }
   try {
@@ -387,21 +430,28 @@ function checkKeyLocation(c: Ctx, src: CredentialSource | null, cfg: Config): vo
   }
 }
 
+const GRAPHIFY_INSTALL = '  uv tool install --force "graphifyy[mcp]"\n  (or: pipx install --force "graphifyy[mcp]")';
+
 async function checkGraphify(c: Ctx): Promise<void> {
   const g = await findGraphify(c.deps.env);
   const graph = join(c.dir, ...layout.graph.split('/'));
   if (!g) {
-    add(c, { status: 'info', area: 'graphify', text: 'graphify not found.', fix: 'Optional: pipx/uv install graphifyy to ask your history in Claude or Cursor.' });
+    add(c, { status: 'info', area: 'graphify', text: 'Optional: graphify is not installed. To ask your history in Claude or Cursor, install it with:', fix: GRAPHIFY_INSTALL });
     return;
   }
-  if (!g.mcp) {
-    add(c, { status: 'warn', area: 'graphify', text: 'graphify found but its MCP server is not installed. To ask your history in Claude:', fix: '  uv tool install --force "graphifyy[mcp]"' });
-  } else {
-    add(c, { status: 'ok', area: 'graphify', text: 'graphify found, with its MCP server. Add it to Claude Code with:', fix: `  claude mcp add seo-history -- ${g.python} -m graphify.serve "${graph}"` });
+  // The absolute graphify-mcp path also works in Claude Desktop and Cursor, which don't see your shell's PATH.
+  const connect = g.mcpExe ? `  claude mcp add seo-history -- "${g.mcpExe}" "${graph}"` : g.python ? `  claude mcp add seo-history -- ${g.python} -m graphify.serve "${graph}"` : null;
+  if (g.mcp || (g.mcpExe && !g.python)) {
+    // With an env shebang the Python can't be read, so the MCP extra can't be checked: say how to connect anyway.
+    add(c, { status: g.mcp ? 'ok' : 'info', area: 'graphify', text: g.mcp ? 'graphify found, with its MCP server. Add it to Claude Code with:' : "graphify found. If its MCP extra is installed, add it to Claude Code with:", ...(connect ? { fix: connect } : {}) });
+    return;
   }
-  if (g.python && !g.mcp) {
-    add(c, { status: 'info', area: 'graphify', text: 'Then add it to Claude Code with:', fix: `  claude mcp add seo-history -- ${g.python} -m graphify.serve "${graph}"` });
+  if (!g.python) {
+    add(c, { status: 'info', area: 'graphify', text: "Optional: graphify found, but searchtrace couldn't tell whether its MCP server is installed. To make sure, run:", fix: GRAPHIFY_INSTALL });
+    return;
   }
+  add(c, { status: 'info', area: 'graphify', text: 'Optional: graphify is installed but not its MCP server. To ask your history in Claude, run:', fix: GRAPHIFY_INSTALL });
+  if (connect) add(c, { status: 'info', area: 'graphify', text: 'Then add it to Claude Code with:', fix: connect });
 }
 
 async function checkBrandAndSize(c: Ctx, cfg: Config): Promise<void> {
@@ -416,7 +466,16 @@ async function checkBrandAndSize(c: Ctx, cfg: Config): Promise<void> {
   try {
     const m = buildBrandMatcher({ siteDomain: siteDomainOf(cfg.property), siteName: null, terms: cfg.analysis.brandTerms });
     const sug = doc?.diagnostics?.brandSuggestions ?? [];
-    add(c, { status: 'ok', area: 'brand', text: `Brand words: ${m.tokens.join(', ') || 'none'} (suggested: ${sug.length ? sug.join(', ') : 'none'})` });
+    c.brandWords = [...m.tokens, ...cfg.analysis.brandTerms, ...sug];
+    const tokens = m.tokens.join(', ') || 'none';
+    if (!doc) add(c, { status: 'ok', area: 'brand', text: `Brand words: ${tokens} (more suggestions after the first run)` });
+    else if (!sug.length) add(c, { status: 'ok', area: 'brand', text: `Brand words: ${tokens}` });
+    else {
+      add(c, {
+        status: 'ok', area: 'brand', text: `Brand words: ${tokens}. Your searches also treat ${sug.join(', ')} like a brand`,
+        fix: 'If those are yours, add them to analysis.brandTerms in config.json.',
+      });
+    }
   } catch {
     add(c, { status: 'info', area: 'brand', text: 'Brand words: worked out on the first run.' });
   }
@@ -426,8 +485,23 @@ async function checkBrandAndSize(c: Ctx, cfg: Config): Promise<void> {
   }
 }
 
-export async function runDoctor(dir: string, deps: CliDeps, secrets: SecretRegistry): Promise<Check[]> {
-  const c: Ctx = { deps, dir, secrets, checks: [], config: null, auth: null };
+export interface DoctorOptions {
+  /** --credentials FILE, as typed (resolved against cwd here). */
+  credentials?: string | null;
+  /** --share: hide the balance; doctorCommand scrubs the rest. */
+  share?: boolean;
+}
+
+/** What --share needs to scrub, from the checks doctor just ran. */
+export interface DoctorRun { checks: Check[]; config: Config | null; principal: string | null; brandWords: string[] }
+
+export async function runDoctor(dir: string, deps: CliDeps, secrets: SecretRegistry, o: DoctorOptions = {}): Promise<Check[]> {
+  return (await runDoctorFull(dir, deps, secrets, o)).checks;
+}
+
+export async function runDoctorFull(dir: string, deps: CliDeps, secrets: SecretRegistry, o: DoctorOptions = {}): Promise<DoctorRun> {
+  const credentials = o.credentials ? resolve(deps.cwd, expandHome(o.credentials, deps.homedir)) : null;
+  const c: Ctx = { deps, dir, secrets, checks: [], config: null, auth: null, credentials, share: Boolean(o.share), brandWords: [] };
   const m = /^v?(\d+)\.(\d+)/.exec(deps.nodeVersion);
   const okNode = m !== null && (Number(m[1]) > 22 || (Number(m[1]) === 22 && Number(m[2]) >= 13));
   add(c, okNode
@@ -450,7 +524,53 @@ export async function runDoctor(dir: string, deps: CliDeps, secrets: SecretRegis
   if (c.config) checkKeyLocation(c, src, c.config);
   await checkGraphify(c);
   if (c.config) await checkBrandAndSize(c, c.config);
-  return c.checks;
+  return { checks: c.checks, config: c.config, principal: c.auth?.principal ?? null, brandWords: c.brandWords };
+}
+
+/**
+ * --share: doctor's output with the things that identify you or your client swapped for
+ * placeholders, so it can go in a public GitHub issue. One pass over the final text, so the
+ * principal and property inside Google's own error messages are caught too. The property's
+ * shape (sc-domain: or https://) survives, because that is what most setup problems are about.
+ */
+export function scrubForSharing(text: string, o: { dir: string; home: string; run: DoctorRun }): string {
+  const map = new Map<string, string>();
+  const put = (value: string | null | undefined, placeholder: string): void => {
+    if (value && value.length >= 3 && !map.has(value)) map.set(value, placeholder);
+  };
+  // Raw, slash-separated and JSON-escaped (Windows backslashes double up in --json output).
+  for (const [value, placeholder] of [[o.dir, '<data folder>'], [o.home, '~']] as const) {
+    put(value, placeholder);
+    put(value.split(sep).join('/'), placeholder);
+    put(JSON.stringify(value).slice(1, -1), placeholder);
+  }
+  const cfg = o.run.config;
+  if (cfg) {
+    const host = siteDomainOf(cfg.property);
+    put(host, 'example.com');
+    put(`www.${host}`, 'www.example.com');
+    if (cfg.siteOrigin) {
+      try {
+        put(new URL(cfg.siteOrigin).hostname, 'example.com');
+      } catch {
+        // not a URL
+      }
+    }
+    put(host.replace(/\.[^.]+$/, '').replace(/[^a-z0-9]/gi, ''), '<brand>');
+  }
+  for (const w of o.run.brandWords) put(w, '<brand>');
+  const principal = o.run.principal;
+  if (principal && principal.includes('@')) {
+    const sa = /^[^@]+@([^.]+)\.iam\.gserviceaccount\.com$/.exec(principal);
+    if (sa) {
+      put(principal, '<robot>@<project>.iam.gserviceaccount.com');
+      put(sa[1], '<project>');
+    } else put(principal, '<you>@<domain>');
+  }
+  const keys = [...map.keys()].sort((a, b) => b.length - a.length || (a < b ? -1 : 1));
+  if (!keys.length) return text;
+  const re = new RegExp(keys.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g');
+  return text.replace(re, (m) => map.get(m) ?? m);
 }
 
 export function formatChecks(dir: string, checks: Check[]): string {
@@ -475,11 +595,16 @@ export async function doctorCommand(args: string[], partial?: Partial<CliDeps>):
   const deps = resolveDeps(partial);
   const secrets = createSecretRegistry({ ci: false });
   try {
-    const { values: v } = parseFlags(args, { dir: { type: 'string' }, json: { type: 'boolean' } }, 'doctor');
+    const { values: v } = parseFlags(args, {
+      dir: { type: 'string' }, json: { type: 'boolean' }, credentials: { type: 'string' }, share: { type: 'boolean' },
+    }, 'doctor');
     const dir = resolveDir(v.dir, deps);
-    const checks = await runDoctor(dir, deps, secrets);
-    if (v.json) out(deps, secrets.redact(JSON.stringify({ dir, checks }, null, 2)));
-    else deps.stdout.write(secrets.redact(formatChecks(dir.split(sep).join('/'), checks)));
+    const run = await runDoctorFull(dir, deps, secrets, { credentials: v.credentials ?? null, share: Boolean(v.share) });
+    const checks = run.checks;
+    let text = v.json ? `${JSON.stringify({ dir, version: toolVersion(), checks }, null, 2)}\n` : formatChecks(dir.split(sep).join('/'), checks);
+    text = secrets.redact(text);
+    if (v.share) text = scrubForSharing(text, { dir, home: deps.homedir, run });
+    deps.stdout.write(text);
     return doctorExit(checks);
   } catch (e) {
     return printError(e, deps, secrets);

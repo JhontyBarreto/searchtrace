@@ -143,6 +143,9 @@ describe('buildGraph', () => {
     expect(past).toMatchObject({ current: false, first_reported: '2026-07-01', last_reported: '2026-07-01', real_label: 'Real change' });
     const head = nodeBy(doc, 'finding', 'fheadline0000001') as GNode;
     expect(head).toMatchObject({ current: true, first_reported: '2026-09-01', last_reported: D, source_file: 'findings/2026/09/' });
+    // A sighting passed no test: graph queries filtering on "Real change" must never get it.
+    const fact = nodeBy(doc, 'finding', 'faiofact00000001') as GNode;
+    expect(fact).toMatchObject({ real: null, real_label: 'Measured fact' });
   });
 
   it('includes queries by impressions plus every query a finding or a check refers to', () => {

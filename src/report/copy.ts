@@ -6,10 +6,14 @@
 // take direction 'down' | 'up' and swap fell/rose, fewer/more, lost/gained, drop/rise,
 // slipped/climbed and cost/earned. Output is plain text: escape it for HTML or Markdown.
 import { diffDays } from '../core/time.js';
-import type { AltKey, AnalysisOutput, Cause, Confidence, FalsifierKey, Finding, IdCheckName, TemplateId, Verdict } from '../core/types.js';
+import type {
+  AltKey, AnalysisOutput, AnalysisUnit, Cause, Confidence, FalsifierKey, Finding, IdCheckName, TemplateId, Verdict, VerdictReason,
+} from '../core/types.js';
 import {
-  capitalise, confidenceLevel, eventName, fmtAbsPct, fmtCount, fmtDate, fmtFreq, fmtInt, fmtMoney, fmtPct, fmtPos, fmtRate, plural,
+  NOTE_COMMAND, capitalise, confidenceLevel, eventName, fmtAbsPct, fmtCount, fmtDate, fmtFreq, fmtInt, fmtMoney, fmtPct, fmtPos, fmtRate,
+  fmtSignedInt, noteCommand, plural,
 } from './format.js';
+import { alsoWorthGroups } from './select.js';
 
 export const REAL_LABEL: Record<Verdict, string> = {
   signal: 'Real change',
@@ -17,6 +21,18 @@ export const REAL_LABEL: Record<Verdict, string> = {
   underpowered: 'Not enough data yet',
   unclear: "Can't separate the causes",
 };
+
+/** A real change smaller than the size worth acting on (verdict noise, reason noise_small). */
+export const SMALL_CHANGE_LABEL = 'Small change';
+/** A raw observation (reason fact): never "Real change", which only ever means a passed test. */
+export const FACT_LABEL = 'Measured fact';
+
+/** The "Is it real?" label of a finding: noise splits into "Small change" and "Normal wobble". */
+export function realLabel(f: { real: Verdict; reason: VerdictReason }): string {
+  if (f.reason === 'fact') return FACT_LABEL;
+  if (f.real === 'noise' && f.reason === 'noise_small') return SMALL_CHANGE_LABEL;
+  return REAL_LABEL[f.real];
+}
 
 export const BADGE: Record<Confidence, string> = {
   EXTRACTED: 'Measured',
@@ -52,21 +68,13 @@ export const CAUSE_PHRASE: Record<Cause, string> = {
   data_anomaly: 'a reporting change',
   seasonal: 'the season',
   mixed: 'several things at once',
-  unknown: 'something we can not name yet',
+  unknown: "something we can't name yet",
 };
 
-/** Waterfall display groups (5.5.5). */
-export type DisplayGroup = 'demand' | 'ranking' | 'samePos' | 'aioCitation' | 'churn';
-export const GROUP_LABEL: Record<DisplayGroup, string> = {
-  demand: 'Fewer or more searches',
-  ranking: 'Ranking',
-  samePos: 'Same spot, different click rate',
-  aioCitation: 'AI Overview citation',
-  churn: 'Appeared or disappeared',
-};
-export const REMAINDER_LABEL = 'Unattributed searches (included above; private or not reported)';
-/** The note under the click breakdown table about the searches Google doesn't name. */
-export const REMAINDER_NOTE = "Searches Google doesn't name (private or not reported) are already counted in the parts above.";
+export {
+  GROUP_LABEL, HIDDEN_PART_NOTE, aioBridgeSentence, displayGroups, isEmptyRow, remainderNote, shownGroups, unitDisplay,
+} from './copy-parts.js';
+export type { DisplayGroup, GroupRow } from './copy-parts.js';
 
 /** cant_separate reason text, by the identification check that failed (6.2). */
 export const REASON_TEXT: Record<IdCheckName, string> = {
@@ -80,6 +88,11 @@ export const REASON_TEXT: Record<IdCheckName, string> = {
 };
 
 export const FALSIFIER_PREFIX = 'What would prove this wrong:';
+/** Lines that are not falsifiers get their own prefix: a date to wait for, or a next step. */
+const FALSIFIER_PREFIXES: Partial<Record<FalsifierKey, string>> = {
+  more_data: "When we'll know:",
+  record_changes: 'Next step:',
+};
 
 // Exhaustive key lists, checked against the frozen unions by `satisfies`.
 const TEMPLATE_KEYS = {
@@ -108,15 +121,18 @@ const ALT_COPY = {
   outage_overlaps: 'Google outage: {event} overlaps these dates.',
 } satisfies Record<AltKey, string>;
 const FALSIFIER_COPY = {
-  revert_and_recrawl: 'if you undo the change and Google recrawls, clicks should come back within about 4 weeks.',
+  revert_and_recrawl: "if you undo the change and clicks still haven't come back about 4 weeks after Google recrawls those pages, the change wasn't the cause.",
   next_update_recovery: "if pages you didn't touch recover at the next core update while yours don't, it was something on your side.",
-  impressions_recover: 'if impressions recover while your positions stay put, it was demand.',
+  impressions_recover: "if impressions come back but clicks don't, it wasn't fewer searches.",
   aio_disappears: "if the AI Overview goes away and your click rate stays low, it wasn't the AI Overview.",
   position_recovers: "if your position recovers and clicks don't, ranking wasn't the whole story.",
-  more_data: "we'll know more by {check_date}.",
+  more_data: 'by {check_date}.',
   reverts: 'if the next 4 weeks return to the old level, this was a blip.',
-  record_changes: 'if you changed something around then, add it with `searchtrace note` and we\'ll test it.',
+  record_changes: `if you changed something around then, add it with \`${NOTE_COMMAND}\` and we'll test it.`,
 } satisfies Record<FalsifierKey, string>;
+/** For a change we call wobble or small, "it reverts" would confirm it: what would disprove it is the new level holding. */
+const PERSISTS = 'if the new level holds for another 4 weeks, it was more than normal wobble.';
+const KEEPS_GOING = "if it keeps moving the same way for another 4 weeks, it's bigger than it looks now.";
 
 export const TEMPLATE_IDS = Object.keys(TEMPLATE_KEYS) as TemplateId[];
 export const ALT_KEYS = Object.keys(ALT_COPY) as AltKey[];
@@ -127,12 +143,13 @@ type Slots = Record<string, string | number | boolean | null | undefined>;
 type SlotKind = 'int' | 'absInt' | 'count' | 'pct' | 'absPct' | 'rate' | 'pos' | 'date' | 'money' | 'freq' | 'event' | 'text';
 
 const DEFAULT_KIND: Record<string, SlotKind> = {
-  days: 'int', clicks: 'int', abs: 'absInt', n: 'int', k: 'int', n_days: 'int', weeks: 'int', cpw: 'count',
-  lo: 'int', hi: 'int',
+  days: 'int', clicks: 'int', abs: 'absInt', n: 'int', k: 'int', n_days: 'int', weeks: 'int', cpw: 'count', cur_cpw: 'count',
+  lo: 'int', hi: 'int', lost: 'absInt', appeared: 'int', more_domains: 'int', attributed: 'int',
   pct: 'pct', impr_pct: 'pct', clicks_pct: 'pct', yoy: 'pct', ctrl: 'pct', touched: 'pct', untouched: 'pct',
-  mde: 'absPct', share: 'absPct', hidden: 'absPct', shown: 'absPct', x: 'absPct', slope: 'absPct',
-  cb: 'rate', cc: 'rate', pb: 'pos', pc: 'pos', cost: 'money', freq: 'freq',
-  date: 'date', d1: 'date', d2: 'date', change_date: 'date', check_date: 'date',
+  ci_lo: 'pct', ci_hi: 'pct', size_pct: 'pct', size_lo: 'pct', size_hi: 'pct',
+  mde: 'absPct', share: 'absPct', hidden: 'absPct', shown: 'absPct', x: 'absPct', slope: 'absPct', delta: 'absPct', hidden_share: 'absPct',
+  cb: 'rate', cc: 'rate', pb: 'pos', pc: 'pos', cost: 'money', freq: 'freq', impr_day: 'count', clicks_day: 'count',
+  date: 'date', d1: 'date', d2: 'date', change_date: 'date', check_date: 'date', back: 'date',
   update: 'event', event: 'event',
 };
 const KIND_OVERRIDE: Partial<Record<TemplateId, Record<string, SlotKind>>> = {
@@ -250,9 +267,13 @@ function imprSentence(r: SlotReader, slots: Slots): string {
       return `Impressions, which have far more data, did change: ${pct} (${REAL_LABEL.signal}).`;
     case 'underpowered': {
       // Say why impressions don't settle it either, rather than "didn't change" next to +200%.
+      // From a tiny base a percent says little ("+22,400%"): give the counts instead.
+      const base = r.num('impr_base');
+      const tiny = base !== null && r.has('impr_cur') && (base < 10 || (tau !== null && tau > 10));
       const moved = tau !== null && tau <= -0.995 ? 'Impressions went to zero'
-        : tau !== null && Math.abs(tau) < 0.01 ? `Impressions barely moved (${pct})`
-          : `Impressions moved ${pct}`;
+        : tiny ? `Impressions went from ${fmtInt(base as number)} to ${r.s('impr_cur', 'int')}`
+          : tau !== null && Math.abs(tau) < 0.01 ? `Impressions barely moved (${pct})`
+            : `Impressions moved ${pct}`;
       return r.str('impr_reason') === 'floors'
         ? `${moved}, but there are too few of them to judge either.`
         : `${moved}, but they swing too much from month to month to call that real either.`;
@@ -294,9 +315,17 @@ function citedText(r: SlotReader, slots: Slots): string {
   return r.has('domains') ? `, and it doesn't cite you; it cites ${r.s('domains')}` : ", and it doesn't cite you";
 }
 
-/** Series labels read naturally inside a sentence: "the whole site", "brand searches". */
+/**
+ * Series labels read naturally inside a sentence: "the whole site", "searches for your business
+ * name", "pages under /blog/", "your home page". Raw template globs ("/blog/*") and "/" are jargon.
+ */
 function unitPhrase(u: string): string {
-  return u.replace(/^whole site\b/i, 'the whole site').replace(/^(Brand|Other) searches\b/, (m) => m.toLowerCase());
+  if (u === '/') return 'your home page';
+  if (u === 'other pages') return 'other pages (small sections)';
+  const tpl = /^(\/.*\/)\*$/.exec(u);
+  if (tpl) return `pages under ${tpl[1]}`;
+  return u.replace(/^whole site\b/i, 'the whole site')
+    .replace(/^(Brand|Other) searches\b|^Searches (for|without) your business name\b/, (m) => m.toLowerCase());
 }
 
 /** "has" or "have" for a metric name used as a subject ("Impressions have", "Clicks have"). */
@@ -328,11 +357,26 @@ function whyUnclear(r: SlotReader): string {
   return ` We can't separate the causes: ${fill(REASON_TEXT[check as IdCheckName], r)}.`;
 }
 
+/** " (at least 5%, possibly 14%)" from two signed fractions, or '' when either is missing. */
+function sizeRange(r: SlotReader, loName: string, hiName: string): string {
+  const lo = r.num(loName);
+  const hi = r.num(hiName);
+  if (lo === null || hi === null) return '';
+  const a = Math.min(Math.abs(lo), Math.abs(hi));
+  const b = Math.max(Math.abs(lo), Math.abs(hi));
+  return ` (at least ${fmtAbsPct(a)}, possibly ${fmtAbsPct(b)})`;
+}
+
+/** "the 10% we treat as worth acting on", or a plain fallback without a delta slot. */
+function deltaPhrase(r: SlotReader): string {
+  return r.has('delta') ? `the ${r.s('delta')} we treat as worth acting on` : 'the size we treat as worth acting on';
+}
+
 /** Two magnitudes as an ascending range of plain percents ("12% to 31%"). */
-function pctRange(r: SlotReader): string {
-  const lo = r.num('lo');
-  const hi = r.num('hi');
-  if (lo === null || hi === null) return `${r.s('lo')} to ${r.s('hi')}`;
+function pctRange(r: SlotReader, loName = 'lo', hiName = 'hi'): string {
+  const lo = r.num(loName);
+  const hi = r.num(hiName);
+  if (lo === null || hi === null) return `${r.s(loName)} to ${r.s(hiName)}`;
   const a = Math.abs(lo);
   const b = Math.abs(hi);
   return `${fmtAbsPct(Math.min(a, b))} to ${fmtAbsPct(Math.max(a, b))}`;
@@ -355,6 +399,15 @@ function nDaysInto(r: SlotReader): string {
 
 /** One sentence (or a short paragraph) for a template. */
 export function renderSentence(template: TemplateId, slots: Record<string, string | number>): string {
+  const text = sentenceFor(template, slots);
+  // A real change whose estimate is below the size we flag carries its range (5.8): "fell 9% (at least 5%, possibly 14%)".
+  const r = reader(template, slots as Slots);
+  if (!r.has('size_lo') || !r.has('size_hi') || !r.has('size_pct')) return text;
+  const metric = r.has('metric') ? capitalise(r.s('metric')) : 'Clicks';
+  return `${text} ${metric} ${r.w('fell', 'rose')} ${r.s('size_pct', 'absPct')} over the period${sizeRange(r, 'size_lo', 'size_hi')}.`;
+}
+
+function sentenceFor(template: TemplateId, slots: Record<string, string | number>): string {
   const sl = slots as Slots;
   const r = reader(template, sl);
   const { w } = r;
@@ -369,13 +422,14 @@ export function renderSentence(template: TemplateId, slots: Record<string, strin
     }
     case 'boring':
       return 'Nothing important changed. Clicks and impressions stayed within their normal range.';
+    // The confidence lives in the "Why: ... (Estimated/Possible)" badge, so the sentences don't repeat it.
     case 'real_google':
       return `This is a real ${w('drop', 'rise')}, and it most likely came from Google's side. It started on ${r.s('date')}, ` +
         `${nDaysInto(r)}, and pages you didn't change ${w('fell', 'rose')} about as much as pages you did ` +
-        `(${r.s('touched')} vs ${r.s('untouched')}). Confidence: ${r.s('level')}.`;
+        `(${r.s('touched')} vs ${r.s('untouched')}).`;
     case 'real_google_no_changes':
       return `This is a real ${w('drop', 'rise')}, and it most likely came from Google's side. It started on ${r.s('date')}, ` +
-        `${nDaysInto(r)}. We had no recorded changes on your site at that time. Confidence: ${r.s('level')}.`;
+        `${nDaysInto(r)}. We had no recorded changes on your site at that time.`;
     case 'real_site_change': {
       // "{k} of the {n} pages you changed": the pages that changed, and how many of them moved.
       const one = r.num('n') === 1;
@@ -384,7 +438,7 @@ export function renderSentence(template: TemplateId, slots: Record<string, strin
         : `${r.s('k')} of the ${countWord(r, 'n', 'page', 'pages')} you changed on ${r.s('change_date')} (${r.s('summary')}) ${w('lost', 'gained')} clicks.`;
       return `This is a real ${w('drop', 'rise')}, and it most likely came from a change on your site. ${which} ` +
         `Google recrawled ${one ? 'it' : 'them'} between ${r.s('d1')} and ${r.s('d2')}, and the ${w('drop', 'rise')} started right after. ` +
-        `Pages you didn't touch held steady (${r.s('ctrl')}). Confidence: ${r.s('level')}.`;
+        `Pages you didn't touch held steady (${r.s('ctrl')}).`;
     }
     case 'demand': {
       const yoy = yoySentence(r, sl);
@@ -392,9 +446,14 @@ export function renderSentence(template: TemplateId, slots: Record<string, strin
         `${w('fell', 'rose')} ${r.s('pct')}, which accounts for about ${r.s('share')} of the ${w('lost', 'gained')} clicks.` +
         (yoy ? ` ${yoy}` : '');
     }
-    case 'ranking':
-      return `You ${w('slipped', 'climbed')} in the rankings, from about position ${r.s('pb')} to ${r.s('pc')} on ` +
-        `${countWord(r, 'n', 'search', 'searches')}. That ${w('cost', 'earned')} an estimated ${clickRange(r)} clicks.`;
+    case 'ranking': {
+      // Mostly searches Google doesn't name: the positions are the page-level averages, and never "on 0 searches".
+      const n = r.num('n');
+      const where = r.has('hidden_share') ? ", mostly on searches Google doesn't name"
+        : n !== null && n > 0 ? ` on ${countWord(r, 'n', 'search', 'searches')}` : '';
+      return `You ${w('slipped', 'climbed')} in the rankings, from about position ${r.s('pb')} to ${r.s('pc')}${where}. ` +
+        `That ${w('cost', 'earned')} an estimated ${clickRange(r)} clicks.`;
+    }
     case 'aio_not_cited':
       // The side-by-side comparison (cross-section) compares levels at one time, so it is worded as
       // a comparison, not proof (5.11.3); the before-and-after estimate keeps the 6.2 wording.
@@ -402,6 +461,16 @@ export function renderSentence(template: TemplateId, slots: Record<string, strin
         return 'On searches where Google shows an AI Overview that doesn\'t cite you, your click rate is ' +
           `${r.s('x')} lower than on similar searches without one (likely range ${pctRange(r)}). This is a comparison, ` +
           "not proof: those searches may differ in other ways, and Google doesn't report clicks lost to AI Overviews.";
+      }
+      if (r.has('scope')) {
+        // A section, page or search borrows the site-wide estimate: say so, and give its own share.
+        const subject = r.str('scope') === 'query' ? 'This search shows' : r.str('scope') === 'page' ? 'Searches for this page show' : 'Searches in this section show';
+        const share = r.has('a') && r.has('lost')
+          ? ` Applied here, that's about ${r.s('a', 'int')} of the ${r.s('lost')} clicks lost; the rest isn't explained by the AI Overview.`
+          : '';
+        return `${subject} an AI Overview that doesn't cite you. Across all such searches on your site, click rates fell about ` +
+          `${r.s('x')} more than on similar searches without one (likely range ${pctRange(r)}).${share} This is an estimate: ` +
+          "Google doesn't report clicks lost to AI Overviews.";
       }
       return 'People clicked less even though you ranked in the same place. On searches where Google now shows an AI Overview ' +
         `that doesn't cite you, your click rate fell ${r.s('x')} more than on similar searches without one ` +
@@ -426,14 +495,26 @@ export function renderSentence(template: TemplateId, slots: Record<string, strin
         `shows on ${r.s('n')} of these searches. We can't size its effect on your site yet.`;
     case 'noise': {
       const metric = r.has('metric') ? capitalise(r.s('metric')) : 'Clicks';
-      const freq = r.num('freq');
-      // Without a frequency (too little history to count past swings), don't claim one.
-      const how = freq === null
-        ? 'which is within normal ups and downs for your site'
+      // Real but small (the range excludes 0 and passes false-discovery control, all inside +-delta):
+      // never "wobble" or "nothing to act on".
+      if (r.str('verdict_reason') === 'noise_small') {
+        const range = r.has('ci_lo') && r.has('ci_hi') ? ` (likely ${pctRange(r, 'ci_lo', 'ci_hi')})` : '';
+        return `${metric} ${w('fell', 'rose')} ${r.s('pct', 'absPct')}${range}. That's a real ${w('drop', 'rise')}, but smaller than ` +
+          `${deltaPhrase(r)}, so keep an eye on it rather than act on it.`;
+      }
+      const lo = r.num('ci_lo');
+      const hi = r.num('ci_hi');
+      const excludesZero = lo !== null && hi !== null && (lo > 0 || hi < 0);
+      const freq = excludesZero ? null : r.num('freq');
+      const bound = r.has('delta') ? `and any real change is smaller than ${r.s('delta')}` : 'which is within normal ups and downs for your site';
+      // A frequency only reads true for an ordinary swing (the range contains 0) counted from ordinary periods.
+      const how = freq === null ? bound
         : freq <= 0 ? 'and swings this size happen rarely in your history' : `and swings this size happen about ${fmtFreq(freq)} in your history`;
       return `This is normal wobble. ${metric} moved ${r.s('pct')}, ${how}. Nothing to act on.`;
     }
     case 'not_enough_data': {
+      const aio = aioNotEnough(r);
+      if (aio) return `Not enough data to compare yet. ${aio}`;
       const impr = imprSentence(r, sl);
       const notMeasurable = truthy(sl.not_measurable) || (typeof sl.mde === 'number' && !Number.isFinite(sl.mde));
       // The smallest detectable change is worth showing whenever it is a real number below about
@@ -464,9 +545,10 @@ export function renderSentence(template: TemplateId, slots: Record<string, strin
     }
     case 'cause_unknown': {
       const start = r.has('top_segment') ? ` Start looking at ${r.s('top_segment')}.` : '';
+      const cmd = noteCommandFor(r);
       return `Something real happened around ${r.s('date')}, but we can't say why. It doesn't line up with a Google update, ` +
         `a change we recorded on your site, or a drop in searches.${start} If you changed something around then, run ` +
-        "`searchtrace note` and we'll re-check.";
+        `\`${cmd}\` and we'll re-check.`;
     }
     case 'cant_separate':
       return `Something changed around ${r.s('date')}, but ${reasonText(r, sl)}, so we can't separate the causes.`;
@@ -488,10 +570,10 @@ export function renderSentence(template: TemplateId, slots: Record<string, strin
       // With {since}, the date recording started, so it reads right next to changes recorded later.
       if (r.has('since')) {
         return `We only started recording your site's changes on ${r.s('since', 'date')}, so for anything earlier we can't say whether ` +
-          "something you did caused it. If you remember changing something, add it with `searchtrace note` and we'll re-check.";
+          `something you did caused it. If you remember changing something, add it with \`${NOTE_COMMAND}\` and we'll re-check.`;
       }
       return "We weren't recording your site's changes back then, so we can't say whether something you did caused this. " +
-        "If you remember changing something, add it with `searchtrace note` and we'll re-check.";
+        `If you remember changing something, add it with \`${NOTE_COMMAND}\` and we'll re-check.`;
     case 'site_change_unseen':
       return `Google hasn't seen this change yet on ${countWord(r, 'n', 'page', 'pages')} (last crawled before ${r.s('date')}).`;
     case 'index_change':
@@ -514,14 +596,27 @@ export function renderSentence(template: TemplateId, slots: Record<string, strin
         `impressions ${r.s('impr_pct')} (${label('impr')}).`;
     }
     case 'change_point': {
+      if (r.has('appeared')) {
+        // The grouped fact for pages first seen inside the window: levels, never a percent.
+        const one = r.num('appeared') === 1;
+        const span = r.s('d1') === r.s('d2') ? `on ${r.s('d1')}` : `between ${r.s('d1')} and ${r.s('d2')}`;
+        return `${countWord(r, 'appeared', 'page', 'pages')} started appearing in Google ${span}. ${one ? 'It gets' : 'Together they get'} ` +
+          `about ${r.s('impr_day')} impressions and ${r.s('clicks_day')} clicks a day now.`;
+      }
       const window = r.has('d1') && r.has('d2') && r.s('d1') !== r.s('d2') ? ` (most likely between ${r.s('d1')} and ${r.s('d2')})` : '';
       const subject = `${capitalise(r.s('metric'))} on ${unitPhrase(r.s('unit'))}`;
+      const back = r.has('back') ? `, and came back to its earlier level around ${r.s('back')}` : '';
       // From almost nothing (a new page) or by many times over, a percent says little: give the levels.
       const levels = levelChange(r);
-      if (levels && ((r.num('pct') ?? 0) >= 3 || (r.num('from') ?? 1) < 1 || (r.num('to') ?? 1) < 1)) {
+      if (levels && !r.has('back') && ((r.num('pct') ?? 0) >= 3 || (r.num('from') ?? 1) < 1 || (r.num('to') ?? 1) < 1)) {
         return `${subject} ${w('fell', 'went')} ${levels} around ${r.s('date')}${window}.${whyUnclear(r)}`;
       }
-      return `${subject} ${w('dropped', 'rose')} by ${r.s('pct')} around ${r.s('date')}${window}.${whyUnclear(r)}`;
+      // A real change below the size we flag says how big it may be.
+      const pct = r.num('pct');
+      const delta = r.num('delta');
+      const sized = r.str('verdict_reason') === 'signal' && pct !== null && delta !== null && pct < delta ? sizeRange(r, 'ci_lo', 'ci_hi') : '';
+      const verb = r.has('back') ? w('dipped', 'rose') : w('dropped', 'rose');
+      return `${subject} ${verb} by ${r.has('back') || sized ? 'about ' : ''}${r.s('pct')}${sized} around ${r.s('date')}${window}${back}.${whyUnclear(r)}`;
     }
     case 'gradual': {
       const metric = capitalise(r.s('metric'));
@@ -543,14 +638,34 @@ export function renderSentence(template: TemplateId, slots: Record<string, strin
       return `"${r.s('query')}" (${r.s('device')}): an AI Overview showed in ${r.s('k')} of ${countWord(r, 'n', 'check', 'checks')}` +
         `${citedText(r, sl)}.`;
     case 'coverage':
-      return `Google hides the exact searches behind ${r.s('hidden')} of your clicks to protect searchers' privacy. ` +
-        `The search-level explanations cover the other ${r.s('shown')}. Page-level numbers include everything.`;
+      return `We can name the searches behind ${r.s('shown')} of your clicks. Google hides the rest (${r.s('hidden')}) to protect ` +
+        "searchers' privacy; page numbers include all of them.";
     case 'freshness':
-      return `Data runs to ${r.s('date')}, in Pacific Time as Google reports it. Google finalises data 2 to 3 days late, ` +
-        (r.has('n') ? `so the last ${countWord(r, 'n', 'day is', 'days are')} left out` : 'so later days are left out') +
-        ' rather than shown as a fake drop.';
+      return `Final data runs to ${r.s('date')} (Pacific Time, as Google reports it). Google finalises data 2 to 3 days late, ` +
+        'so newer days are kept out of every comparison.';
   }
   return assertNever(template);
+}
+
+/** The `note` command for a sentence, filled with the slots' date and pages when they are safe to quote. */
+function noteCommandFor(r: SlotReader): string {
+  const date = r.str('date');
+  const urls = r.str('note_urls');
+  return noteCommand({ date: date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null, urls: urls && !/["\\`$]/.test(urls) ? urls : null });
+}
+
+/**
+ * Why an AI Overview estimate could not be made, from the analyzer's aio_reason slot (never the
+ * generic "no clicks in the weeks before", which was wrong for both estimators). Null otherwise.
+ */
+function aioNotEnough(r: SlotReader): string | null {
+  switch (r.str('aio_reason')) {
+    case 'single_check': return "We've only checked these searches once so far, and comparing before and after needs a second check of each.";
+    case 'coverage': return 'Too few of the searches we checked sit at similar positions both with and without an AI Overview to compare them.';
+    case 'groups': return 'We need at least 20 searches with an AI Overview and 20 without one to compare them.';
+    case 'clicks': return 'The searches with and without an AI Overview get too few clicks to compare.';
+    default: return null;
+  }
 }
 
 function assertNever(x: never): string {
@@ -577,13 +692,25 @@ export function renderAlt(key: AltKey, slots: Record<string, string | number>): 
   return copy === undefined ? String(key) : fill(copy, r);
 }
 
-/** The falsifier line, including its "What would prove this wrong:" prefix. */
+/** The falsifier line with its prefix ("What would prove this wrong:", or "When we'll know:" / "Next step:"). */
 export function renderFalsifier(key: FalsifierKey, slots: Record<string, string | number>): string {
-  const copy = FALSIFIER_COPY[key];
-  return `${FALSIFIER_PREFIX} ${copy === undefined ? String(key) : fill(copy, reader(null, slots as Slots))}`;
+  return falsifierLine(key, slots, null);
 }
 
-/** The finding's slots plus what the report can derive from the finding itself (level, direction, power). */
+/**
+ * The line for a finding's verdict: "if it reverts, it was a blip" would confirm a wobble or small
+ * verdict, so for those the falsifier is the new level holding (or the change growing).
+ */
+function falsifierLine(key: FalsifierKey, slots: Record<string, string | number>, f: Pick<Finding, 'real' | 'reason'> | null): string {
+  if (key === 'reverts' && f && f.real !== 'signal' && f.reason !== 'fact') {
+    return `${FALSIFIER_PREFIX} ${f.real === 'noise' && f.reason === 'noise_small' ? KEEPS_GOING : PERSISTS}`;
+  }
+  const copy = FALSIFIER_COPY[key];
+  const prefix = FALSIFIER_PREFIXES[key] ?? FALSIFIER_PREFIX;
+  return `${prefix} ${copy === undefined ? String(key) : fill(copy, reader(null, slots as Slots))}`;
+}
+
+/** The finding's slots plus what the report can derive from the finding itself (level, direction, power, verdict reason). */
 export function slotsFor(f: Finding): Record<string, string | number> {
   const s: Record<string, string | number> = { ...f.slots };
   if (s.level === undefined) s.level = confidenceLevel(f);
@@ -594,9 +721,13 @@ export function slotsFor(f: Finding): Record<string, string | number> {
   if (f.power) {
     if (s.not_measurable === undefined && f.power.notMeasurable) s.not_measurable = 1;
     if (s.mde === undefined) s.mde = f.power.mde;
-    if (s.cpw === undefined) s.cpw = f.power.perWeek;
+    if (s.cpw === undefined && s.aio_reason === undefined) s.cpw = f.power.perWeek;
   }
   if (s.pct === undefined && f.effect.estimate !== null) s.pct = f.effect.estimate;
+  if (s.verdict_reason === undefined) s.verdict_reason = f.reason;
+  if (f.template === 'cause_unknown' && s.note_urls === undefined && (f.unit.level === 'page' || f.unit.level === 'template')) {
+    s.note_urls = f.unit.level === 'page' ? f.unit.label : f.unit.key;
+  }
   return s;
 }
 
@@ -607,7 +738,7 @@ export function findingSentence(f: Finding): string {
 
 /** The finding's falsifier line. */
 export function findingFalsifier(f: Finding): string {
-  return renderFalsifier(f.falsifier.key, f.falsifier.slots);
+  return falsifierLine(f.falsifier.key, f.falsifier.slots, f);
 }
 
 /** Every "Other explanations" line for a finding. */
@@ -633,42 +764,33 @@ export function answerSentences(out: AnalysisOutput): { sentence: string; verdic
   const f = headlineFinding(out);
   if (!f) return { sentence: renderSentence('headline', headlineSlots(out)), verdict: '' };
   const slots = slotsFor(f);
-  // The headline comparison carries the wobble frequency even when the finding's slots don't.
-  if (slots.freq === undefined && out.headline.clicks.freq !== null) slots.freq = out.headline.clicks.freq;
+  // The headline comparison carries the wobble frequency even when the finding's slots don't, but
+  // only for an ordinary swing: never next to a range that excludes zero.
+  const ci = f.effect.ci95;
+  const ordinary = f.reason === 'noise_bounded' && !(ci && (ci[0] > 0 || ci[1] < 0));
+  if (slots.freq === undefined && ordinary && out.headline.clicks.freq !== null) slots.freq = out.headline.clicks.freq;
   let verdict = renderSentence(f.template, slots);
-  // The site total can be wobble while a section or a search really changed: don't tell people
-  // there is nothing to act on right above those changes.
-  const elsewhere = out.findings.some((x) => x.id !== f.id && x.real === 'signal' && x.reason !== 'fact' && x.kind !== 'update_impact');
-  if (f.template === 'noise' && elsewhere) {
-    verdict = verdict.replace(/ Nothing to act on\.$/, " Across the whole site that's nothing to act on, but parts of it did change.");
+  // The site total can be wobble or small while a section or a search really changed: name the
+  // biggest one (with its own numbers) instead of telling people there is nothing to act on.
+  const top = f.real === 'noise' ? alsoWorthGroups(out, 1)[0]?.lead : undefined;
+  if (top) {
+    const clicks = top.metric === 'clicks' && top.effect.absolute !== null ? ` (${fmtSignedInt(top.effect.absolute)} clicks)` : '';
+    const tail = ` The biggest real change is in ${unitPhrase(top.unit.label)}${clicks}; details below.`;
+    verdict = f.reason === 'noise_small' ? `${verdict}${tail}`
+      : verdict.replace(/ Nothing to act on\.$/, " Across the whole site that's nothing to act on, but some parts really did change.") + tail;
   }
   return { sentence: renderSentence('headline', headlineSlots(out)), verdict };
 }
 
-/** One waterfall display group with its value and 95% range, when known. */
-export interface GroupRow { group: DisplayGroup; label: string; value: number; ci: [number, number] | null }
-
-type CiMap = Partial<Record<string, [number, number]>> | null | undefined;
-
-/** The five display groups of a set of bars (5.5.5): ranking = rank + visibility, churn = appeared + disappeared. */
-export function displayGroups(
-  bars: { demand: number; visibility: number; rank: number; samePos: number; appeared: number; disappeared: number; aioCitation: number },
-  ci: CiMap,
-): GroupRow[] {
-  const c = (ci ?? {}) as Record<string, [number, number] | undefined>;
-  const pick = (...keys: (string | false)[]): [number, number] | null => {
-    for (const k of keys) if (k && Array.isArray(c[k]) && c[k]!.length === 2) return c[k]!;
-    return null;
-  };
-  const rows: GroupRow[] = [
-    { group: 'demand', label: GROUP_LABEL.demand, value: bars.demand, ci: pick('demand') },
-    { group: 'ranking', label: GROUP_LABEL.ranking, value: bars.rank + bars.visibility, ci: pick('ranking', bars.visibility === 0 && 'rank') },
-    { group: 'samePos', label: GROUP_LABEL.samePos, value: bars.samePos, ci: pick('samePos') },
-    { group: 'aioCitation', label: GROUP_LABEL.aioCitation, value: bars.aioCitation, ci: pick('aioCitation') },
-    {
-      group: 'churn', label: GROUP_LABEL.churn, value: bars.appeared + bars.disappeared,
-      ci: pick('churn', bars.disappeared === 0 && 'appeared', bars.appeared === 0 && 'disappeared'),
-    },
-  ];
-  return rows;
+/**
+ * The "Why: Google update (Estimated)" text for a finding, or null when there is no cause to name:
+ * no cause or an unknown one, a verdict that says nothing changed for sure (wobble, small, too
+ * little data), or an AI Overview estimate that couldn't be made (its label already says AI
+ * Overviews). A bare badge next to "Not enough data yet" reads as a contradiction.
+ */
+export function whyText(f: Pick<Finding, 'cause' | 'causeConfidence' | 'real' | 'kind'>): string | null {
+  if (!f.cause || f.cause === 'unknown') return null;
+  if (f.real === 'noise' || f.real === 'underpowered') return null;
+  if (f.kind === 'aio_effect' && f.real !== 'signal') return null;
+  return `Why: ${CAUSE_LABEL[f.cause]} (${BADGE[f.causeConfidence]})`;
 }

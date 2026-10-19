@@ -2,12 +2,20 @@
 //
 // Stage 1 gives every series one valid p-value: a seasonally adjusted CUSUM whose scale is the
 // long-run (Bartlett) standard deviation of residuals around the best single split, compared with
-// the Kolmogorov distribution. Benjamini-Hochberg runs across every series that met its floors
-// (BH family 1). Stage 2 locates the change for discoveries only: exact optimal partitioning of a
-// quasi-Poisson cost with penalty 3 ln n and a minimum segment, small steps (< 15%) dropped and
-// merged, then each boundary gets an approximate date window (cost within 3.84) and a rate ratio
-// over at most 28 days each side. Labels: too recent, gradual, seasonal (same dates last year),
-// Google update overlap and measurement events. Pure: no clock, no randomness.
+// the Kolmogorov distribution. The scale also carries the series' period-to-period wander measured
+// on its history before the window (cp-history.ts), the same kind of variance the headline's
+// empirical null captures. Benjamini-Hochberg runs across every series that met its floors (BH
+// family 1). Stage 2 locates the change for discoveries only: exact optimal partitioning of a
+// quasi-Poisson cost (with the wander-inflated dispersion) with penalty 3 ln n and a minimum
+// segment, small steps (< 15%) dropped and merged, then each boundary gets an approximate date
+// window (cost within 3.84) and a rate ratio over at most 28 days each side. Each boundary is then
+// tested on its own (the same calibrated CUSUM on the span between its neighbours, which accounts
+// for the scan over split dates) and BH runs across every located boundary (family 1b), so a series
+// that barely passes stage 1 cannot hand its q to five boundaries. A dip (or rise) that comes back
+// to its earlier level within 60 days is one "temporary" finding. Boundary dates and ranges are
+// approximate after selection. Pages first seen inside the window are tested only from 28 days after
+// they appear; the appearances are one grouped fact. Labels: too recent, gradual, seasonal (same
+// dates last year), Google update overlap and measurement events. Pure: no clock, no randomness.
 import { findingId } from '../core/ids.js';
 import { addDays, diffDays, ptDate } from '../core/time.js';
 import type {
@@ -15,11 +23,14 @@ import type {
   Series, Verdict,
 } from '../core/types.js';
 import { layout } from '../store/layout.js';
-import { localise } from './localise.js';
+import {
+  BIRTH_BURN_IN, CHANGEPOINT_VERSION, appearanceFinding, birthDay, guardProportional, wanderLongRun, wanderPhi, wanderVariance,
+} from './cp-history.js';
+import { localise, localiseText } from './localise.js';
 import { benjaminiHochberg, dowFactors, kolmogorovTail, overdispersion, seasonalSeries, theilSen } from './stats.js';
-import { confidenceFor, decideVerdict } from './verdicts.js';
+import { confidenceFor, decideVerdict, deltaForUnit } from './verdicts.js';
 
-export const CHANGEPOINT_VERSION = '1';
+export { CHANGEPOINT_VERSION } from './cp-history.js';
 const DAILY_MIN_SEG = 14;
 const WEEKLY_MIN_SEG = 3;
 const RECENT_DAYS = 14;
@@ -32,6 +43,10 @@ const GRADUAL_GAP_DAYS = 60;
 const GRADUAL_SHARE = 0.6;
 const SEASONAL_HISTORY_DAYS = 53 * 7;
 const DAY_MS = 86_400_000;
+/** A ratio claim needs at least this many counts before the change (a few stray impressions are no base). */
+const MIN_BEFORE = 30;
+/** Up then back (or down then back) within this many days is one temporary change. */
+const TEMPORARY_DAYS = 60;
 const TIER: Record<Verdict, number> = { signal: 1000, unclear: 100, underpowered: 10, noise: 1 };
 
 const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -87,7 +102,7 @@ export function bestSplit(P: Prefix, from: number, toExcl: number, minSeg: numbe
  * Stage 1: K = max_k |S_k| / (sigma_LR sqrt(n)) with S_k the cumulative sum of y_t - mu0 s_t, and
  * p = P(sup |Brownian bridge| > K). argmax is the last index before the change (-1 when there is none).
  */
-export function cusumTest(y: number[], s: number[], minSeg: number, phi = 1): { K: number; p: number; argmax: number } {
+export function cusumTest(y: number[], s: number[], minSeg: number, phi = 1, extraLR = 0): { K: number; p: number; argmax: number } {
   const n = y.length;
   let sy = 0;
   let ss = 0;
@@ -129,7 +144,10 @@ export function cusumTest(y: number[], s: number[], minSeg: number, phi = 1): { 
   // never below the lag-0 variance nor below the robust quasi-Poisson variance phi * mean(y), which
   // a step barely moves. Measured on 40,000 nulls per shape: P(p < 0.05) about 0.03, BH family-wise
   // rate 0.03 to 0.08 at q = 0.10, and power for a -40% step at 3 a day falls only from 0.95 to 0.93.
-  sigma2 = Math.max(sigma2, g0, (phi > 0 ? phi : 1) * (sy / n));
+  // extraLR adds the series' period-to-period wander (L m^2 v / 2, cp-history.ts), which a Bartlett
+  // sum with h = 4 cannot see: with AR(1) level wander and no events it cut P(p < 0.05) from 0.63 to
+  // about 0.01 while a -40% step with wander was still found in about half of the series.
+  sigma2 = Math.max(sigma2, g0, (phi > 0 ? phi : 1) * (sy / n) + Math.max(0, extraLR));
   if (!(sigma2 > 0)) return { K: 0, p: 1, argmax };
   const K = maxAbs / (Math.sqrt(sigma2) * Math.sqrt(n));
   return { K, p: kolmogorovTail(K), argmax };
@@ -239,13 +257,30 @@ function effectBetween(P: Prefix, beforeFrom: number, beforeTo: number, afterFro
 // Per-series preparation
 // ---------------------------------------------------------------------------
 
+/** What the orchestrator passes on top of the input (5.6). */
+export interface ChangePointOptions {
+  /**
+   * Series used only as localisation segments, never tested themselves: a section that is almost
+   * entirely one page whose own series is tested (the same change would be listed twice).
+   */
+  segmentOnly?: ReadonlySet<string>;
+  /** Fallback wander per metric (extra log-ratio variance between 28-day periods) when neither the series nor the site has enough history. */
+  extraVar?: { clicks: number; impressions: number };
+}
+
 interface Prepared {
+  /** The series as tested: after a birth it starts 28 days after the first appearance. */
   series: Series;
+  birth: IsoDate | null;
   phiDaily: number;
   mode: 'daily' | 'weekly' | null;
   y: number[];
   s: number[];
   phi: number;
+  /** Wander per observation: extra long-run variance for the CUSUM scale, and the inflated dispersion. */
+  vExtra: number;
+  extraLR: number;
+  phiEff: number;
   P: Prefix;
   dateOf: (k: number) => IsoDate;
   stepDays: number;
@@ -256,7 +291,14 @@ interface Prepared {
   q: number | null;
 }
 
-function prepare(series: Series, dow: number[]): Prepared {
+function prepare(original: Series, dow: number[], i: ChangePointInput, fallbackV: (m: Series['metric']) => number): Prepared {
+  const hist = i.seasonalValues[original.id];
+  const birth = birthDay(original.start, original.values, hist);
+  let series = original;
+  if (birth) {
+    const from = diffDays(original.start, birth) + BIRTH_BURN_IN;
+    series = { ...original, start: addDays(original.start, from), values: original.values.slice(from) };
+  }
   const y = series.values.map((v) => (Number.isFinite(v) && v > 0 ? v : 0));
   const n = y.length;
   const total = y.reduce((a, b) => a + b, 0);
@@ -265,9 +307,10 @@ function prepare(series: Series, dow: number[]): Prepared {
   const f = mean >= OWN_DOW_MEAN && n >= 28 ? dowFactors(series.start, y) : base;
   const s = n > 0 ? seasonalSeries(series.start, n, f) : [];
   const phiDaily = n > 0 ? overdispersion(y, s) : 1;
+  const vExtra = wanderVariance(hist, original.start, mean, phiDaily) ?? fallbackV(series.metric);
   const prepared: Prepared = {
-    series, phiDaily, mode: null, y, s, phi: phiDaily, P: prefixSums(y, s), dateOf: (k) => addDays(series.start, k), stepDays: 1,
-    minSeg: DAILY_MIN_SEG, recent: RECENT_DAYS, cap: EFFECT_CAP_DAYS, test: null, q: null,
+    series, birth, phiDaily, mode: null, y, s, phi: phiDaily, vExtra, extraLR: 0, phiEff: phiDaily, P: prefixSums(y, s),
+    dateOf: (k) => addDays(series.start, k), stepDays: 1, minSeg: DAILY_MIN_SEG, recent: RECENT_DAYS, cap: EFFECT_CAP_DAYS, test: null, q: null,
   };
   if (n >= 2 * DAILY_MIN_SEG && mean >= 1 && total >= 100) {
     prepared.mode = 'daily';
@@ -292,7 +335,10 @@ function prepare(series: Series, dow: number[]): Prepared {
       recent: Math.ceil(RECENT_DAYS / 7), cap: Math.ceil(EFFECT_CAP_DAYS / 7),
     });
   }
-  if (prepared.mode) prepared.test = cusumTest(prepared.y, prepared.s, prepared.minSeg, prepared.phi);
+  const perObs = prepared.y.length ? prepared.y.reduce((a, b) => a + b, 0) / prepared.y.length : 0;
+  prepared.extraLR = wanderLongRun(vExtra, perObs, prepared.stepDays);
+  prepared.phiEff = wanderPhi(prepared.phi, vExtra, perObs, prepared.stepDays);
+  if (prepared.mode) prepared.test = cusumTest(prepared.y, prepared.s, prepared.minSeg, prepared.phi, prepared.extraLR);
   return prepared;
 }
 
@@ -302,6 +348,10 @@ function prepare(series: Series, dow: number[]): Prepared {
 
 interface Located {
   idx: number; window: [number, number]; effect: Effect; shape: 'step' | 'gradual'; slopePerWeek: number | null; tooRecent: boolean;
+  /** This change's own p: the calibrated CUSUM on the span between its neighbouring boundaries (series p for gradual and too-recent). */
+  p: number;
+  /** A temporary change: the index where the level came back, else null. */
+  back: number | null;
 }
 
 function slopeOf(pr: Prepared, from: number, toExcl: number): number | null {
@@ -319,20 +369,28 @@ function slopeOf(pr: Prepared, from: number, toExcl: number): number | null {
   return Number.isFinite(slope) ? slope : null;
 }
 
+/** The boundary's own test: the same calibrated CUSUM (with the series' wander) on [a, c). */
+function localP(pr: Prepared, a: number, c: number): number {
+  const y = pr.y.slice(a, c);
+  const mean = y.length ? y.reduce((t, v) => t + v, 0) / y.length : 0;
+  return cusumTest(y, pr.s.slice(a, c), pr.minSeg, pr.phi, wanderLongRun(pr.vExtra, mean, pr.stepDays)).p;
+}
+
 function locate(pr: Prepared): Located[] {
   const m = pr.y.length;
-  const test = pr.test as { argmax: number };
+  const test = pr.test as { argmax: number; p: number };
+  const phi = pr.phiEff;
   // Where the change most likely starts. The raw CUSUM argmax is a poor locator near the end of the
   // series (the bridge is pinned to 0 there), so the "too recent" test uses the maximum-likelihood
   // single split, which may sit as close as 3 days (1 week in weekly mode) to the end.
-  const change = bestSplit(pr.P, 0, m, pr.stepDays === 7 ? 1 : RECENT_MIN_SEG, pr.phi) ?? test.argmax + 1;
+  const change = bestSplit(pr.P, 0, m, pr.stepDays === 7 ? 1 : RECENT_MIN_SEG, phi) ?? test.argmax + 1;
   if (change > 0 && change > m - pr.recent) {
-    const effect = effectBetween(pr.P, Math.max(0, change - pr.cap), change, change, m, pr.phi);
-    return [{ idx: change, window: [change, m - 1], effect, shape: 'step', slopePerWeek: null, tooRecent: true }];
+    const effect = effectBetween(pr.P, Math.max(0, change - pr.cap), change, change, m, phi);
+    return [{ idx: change, window: [change, m - 1], effect, shape: 'step', slopePerWeek: null, tooRecent: true, p: test.p, back: null }];
   }
-  let bounds = pruneBoundaries(pr.P, m, optimalPartition(pr.P, m, pr.phi, pr.minSeg, 3 * Math.log(m)), pr.minSeg, pr.phi);
+  let bounds = pruneBoundaries(pr.P, m, optimalPartition(pr.P, m, phi, pr.minSeg, 3 * Math.log(m)), pr.minSeg, phi);
   if (bounds.length === 0) {
-    const t = bestSplit(pr.P, 0, m, pr.minSeg, pr.phi);
+    const t = bestSplit(pr.P, 0, m, pr.minSeg, phi);
     bounds = t === null ? [] : [t];
   }
   if (bounds.length === 0) return [];
@@ -352,16 +410,40 @@ function locate(pr: Prepared): Located[] {
   if (gradual) {
     const first = bounds[0];
     const lastB = bounds[bounds.length - 1];
-    const effect = effectBetween(pr.P, Math.max(0, first - pr.cap), first, lastB, Math.min(m, lastB + pr.cap), pr.phi);
+    const effect = effectBetween(pr.P, Math.max(0, first - pr.cap), first, lastB, Math.min(m, lastB + pr.cap), phi);
     const slope = slopeOf(pr, Math.max(0, first - pr.cap), Math.min(m, lastB + pr.cap));
-    return [{ idx: first, window: [first, lastB], effect, shape: 'gradual', slopePerWeek: slope, tooRecent: false }];
+    return [{ idx: first, window: [first, lastB], effect, shape: 'gradual', slopePerWeek: slope, tooRecent: false, p: test.p, back: null }];
   }
-  return bounds.map((b, j) => {
+  const steps: Located[] = bounds.map((b, j) => {
     const a = edges[j];
     const c = edges[j + 2];
-    const effect = effectBetween(pr.P, Math.max(a, b - pr.cap), b, b, Math.min(c, b + pr.cap), pr.phi);
-    return { idx: b, window: splitWindow(pr.P, a, c, b, pr.minSeg, pr.phi), effect, shape: 'step' as const, slopePerWeek: null, tooRecent: false };
+    const effect = effectBetween(pr.P, Math.max(a, b - pr.cap), b, b, Math.min(c, b + pr.cap), phi);
+    return {
+      idx: b, window: splitWindow(pr.P, a, c, b, pr.minSeg, phi), effect, shape: 'step' as const, slopePerWeek: null, tooRecent: false,
+      p: localP(pr, a, c), back: null,
+    };
   });
+  // Up then back (or down then back) to the earlier level within 60 days: one temporary change, not
+  // two. Real outages and spikes stay visible; wander episodes fail their own test.
+  const out: Located[] = [];
+  for (let j = 0; j < steps.length; j++) {
+    const next = steps[j + 1];
+    if (next) {
+      const opposite = logStep(j) !== 0 && Math.sign(logStep(j)) === -Math.sign(logStep(j + 1));
+      const close = (bounds[j + 1] - bounds[j]) * pr.stepDays <= TEMPORARY_DAYS;
+      const backToLevel = mus[j] > 0 && Math.abs(mus[j + 2] / mus[j] - 1) < MIN_STEP;
+      if (opposite && close && backToLevel) {
+        const b1 = bounds[j];
+        const b2 = bounds[j + 1];
+        const effect = effectBetween(pr.P, Math.max(edges[j], b1 - pr.cap), b1, b1, Math.min(b2, b1 + pr.cap), phi);
+        out.push({ ...steps[j], effect, p: Math.max(steps[j].p, next.p), back: b2 });
+        j++;
+        continue;
+      }
+    }
+    out.push(steps[j]);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -450,13 +532,16 @@ function buildFinding(
   }
   const e = loc.effect;
   const ci: [number, number] = [cp.ci95[0] - 1, cp.ci95[1] - 1];
+  // The unit's own delta (the same bar as its 28-day comparison), and a base of at least 30 before
+  // the change: a ratio of a few stray counts is no claim at all.
+  const delta = deltaForUnit(unit);
   const v = decideVerdict({
     estimate: cp.ratio - 1,
     ci95: ci,
-    floorsMet: !cp.tooRecent,
+    floorsMet: !cp.tooRecent && e.sumBefore >= MIN_BEFORE,
     identification: checks,
     q: cp.q,
-    delta: i.delta,
+    delta,
     fdrQ: i.fdrQ,
     weeksObserved: (e.beforeLen * pr.stepDays) / 7,
     counts: { pre: e.sumBefore, post: e.sumAfter, phi: pr.phi },
@@ -470,16 +555,23 @@ function buildFinding(
   const ranking = cp.overlaps.find((o) => o.kind === 'core' || o.kind === 'spam' || o.kind === 'other_ranking');
   const outage = cp.overlaps.find((o) => o.kind === 'outage');
   let cause: Finding['cause'] = 'unknown';
+  // Timing names an update only for a step dated within two weeks: a gradual slide or a wide date
+  // window overlaps some update by chance (one ran on 70 of the last 182 days).
+  const pinned = cp.shape === 'step' && diffDays(cp.dateWindow[0], cp.dateWindow[1]) <= 14;
   if (extra.measurement && metric === 'impressions') cause = 'data_anomaly';
   else if (extra.seasonal.match) cause = 'seasonal';
-  else if (ranking) cause = 'google_update';
-  else if (outage) cause = 'outage';
+  else if (ranking && pinned) cause = 'google_update';
+  else if (outage && pinned) cause = 'outage';
 
   let template: Finding['template'] = 'change_point';
   // Daily levels before and after (weekday-adjusted), so the report can say "from about 0.1 to 12
   // a day" when a percent would be meaningless (a page that only just started showing up).
   const levels = { from: round(e.before, 2), to: round(e.after, 2) };
-  let slots: Finding['slots'] = { metric, unit: unit.label, pct: Math.abs(cp.ratio - 1), date: cp.date, d1: cp.dateWindow[0], d2: cp.dateWindow[1], direction, ...levels };
+  // The range and the unit's delta, so the report can say how big a real but small change may be,
+  // and the date the level came back for a temporary change.
+  const sized = { ci_lo: ci[0], ci_hi: ci[1], delta, verdict_reason: v.reason };
+  const back: Record<string, string> = loc.back !== null ? { back: pr.dateOf(loc.back) } : {};
+  let slots: Finding['slots'] = { metric, unit: unit.label, pct: Math.abs(cp.ratio - 1), date: cp.date, d1: cp.dateWindow[0], d2: cp.dateWindow[1], direction, ...levels, ...sized, ...back };
   if (cp.tooRecent) {
     template = 'too_recent';
     // metric and unit name the series, so two too-recent changes on one page read differently.
@@ -493,7 +585,7 @@ function buildFinding(
     // a share of the starting level, which only means something when there was a level to start from.
     const weekly = 7 * e.before;
     const rel = cp.slopePerWeek !== null && weekly >= 7 ? Math.abs(cp.slopePerWeek) / weekly : null;
-    slots = { metric, unit: unit.label, date: cp.date, direction, ...levels, ...(rel !== null ? { slope: round(rel, 4) } : {}) };
+    slots = { metric, unit: unit.label, date: cp.date, direction, ...levels, ...sized, ...(rel !== null ? { slope: round(rel, 4) } : {}) };
   }
   // A change we can't attribute says which check stopped it (the report words the IdCheck name).
   if (v.verdict === 'unclear' && v.failed[0] && (template === 'change_point' || template === 'gradual')) slots = { ...slots, check: v.failed[0].name };
@@ -511,12 +603,10 @@ function buildFinding(
         : `Change point on ${unit.label} ${metric}, ${cp.date}${cp.dateWindow[0] === cp.dateWindow[1] ? '' : ` (likely ${cp.dateWindow[0]} to ${cp.dateWindow[1]})`}`,
     },
   ];
-  if (cp.localisation) {
-    const top = cp.localisation.top.slice(0, 3).map((t) => t.label);
-    evidence.push({
-      type: 'statistic', confidence: confidenceFor(v.verdict, false), partition: where,
-      summary: cp.localisation.proportional ? 'Spread across your site in proportion' : `Concentrated in ${top.join(', ')}`,
-    });
+  const where2 = cp.localisation ? localiseText(cp.localisation) : null;
+  if (where2) {
+    // Where the change sits is a reading of the timing, never more than Possible.
+    evidence.push({ type: 'statistic', confidence: 'AMBIGUOUS', partition: where, key: { localisation: pr.series.id }, summary: where2 });
   }
   for (const ev of extra.events) {
     const end = ev.end ? ptDate(ev.end) : null;
@@ -545,7 +635,9 @@ function buildFinding(
   const toRaw = addDays(cp.date, EFFECT_CAP_DAYS - 1);
   const verify: NonNullable<Finding['verify']> = { from, to: toRaw > i.dataThrough ? i.dataThrough : toRaw };
   if (unit.level === 'page') verify.page = unit.key;
-  if (unit.level === 'query') verify.query = unit.key;
+  // Brand and non-brand classes are not one search: an exact query filter on "class:brand" would
+  // show no rows, so their link carries no query filter (the report says how to filter by hand).
+  if (unit.level === 'query' && !unit.key.startsWith('class:')) verify.query = unit.key;
 
   const absClicks = metric === 'clicks' ? Math.abs(absolute) : 1;
   return {
@@ -568,7 +660,9 @@ function buildFinding(
     slots,
     evidence,
     alternatives,
-    falsifier: cp.tooRecent ? { key: 'more_data', slots: { check_date: addDays(cp.date, RECENT_DAYS) } } : { key: 'reverts', slots: {} },
+    // A temporary change already came back, so "if it reverts" says nothing: ask what happened then.
+    falsifier: cp.tooRecent ? { key: 'more_data', slots: { check_date: addDays(cp.date, RECENT_DAYS) } }
+      : loc.back !== null ? { key: 'record_changes', slots: {} } : { key: 'reverts', slots: {} },
     verify,
     related: { googleEvents: overlapIds, siteChanges: [], findings: [] },
     analyzer: { name: 'changepoint', version: CHANGEPOINT_VERSION },
@@ -581,54 +675,90 @@ function buildFinding(
 // ---------------------------------------------------------------------------
 
 export function analyzeChangePoints(i: ChangePointInput): ChangePointOutput {
-  const prepared = i.series.map((s) => prepare(s, i.dow));
+  return analyzeChangePointsWith(i, {});
+}
+
+/** analyzeChangePoints with the orchestrator's options (segment-only series, wander fallback). */
+export function analyzeChangePointsWith(i: ChangePointInput, o: ChangePointOptions): ChangePointOutput {
+  // Wander fallback: the whole site's own estimate per metric, then the caller's, then none.
+  const siteV: Partial<Record<Series['metric'], number>> = {};
+  for (const metric of ['clicks', 'impressions'] as const) {
+    const site = i.series.find((x) => x.id === `site:${metric}`);
+    if (!site) continue;
+    const mean = site.values.length ? site.values.reduce((a, b) => a + Math.max(0, b || 0), 0) / site.values.length : 0;
+    const v = wanderVariance(i.seasonalValues[site.id], site.start, mean, 1);
+    if (v !== null) siteV[metric] = v;
+  }
+  const fallbackV = (m: Series['metric']): number => siteV[m] ?? o.extraVar?.[m] ?? 0;
+  const prepared = i.series.map((s) => prepare(s, i.dow, i, fallbackV));
   const dispersion: Record<string, number> = {};
   for (const pr of prepared) dispersion[pr.series.id] = pr.phiDaily;
 
-  // BH family 1: every series that met its floors.
-  const family = prepared.filter((pr) => pr.test !== null);
+  // BH family 1: every series that met its floors, except segment-only ones.
+  const family = prepared.filter((pr) => pr.test !== null && !o.segmentOnly?.has(pr.series.id));
   const q = benjaminiHochberg(family.map((pr) => (pr.test as { p: number }).p));
   family.forEach((pr, k) => {
     pr.q = q[k];
   });
 
+  // Stage 2 for discoveries, then BH family 1b across every located change on its own p.
+  const located: { pr: Prepared; loc: Located }[] = [];
+  for (const pr of family) {
+    if (!(pr.q !== null && pr.q <= i.fdrQ)) continue;
+    for (const loc of locate(pr)) located.push({ pr, loc });
+  }
+  const q1b = benjaminiHochberg(located.map((x) => x.loc.p));
+
   const events = [...i.events].sort((a, b) => cmp(a.begin, b.begin) || cmp(a.id, b.id));
   const changePoints: ChangePoint[] = [];
   const findings: Finding[] = [];
-  for (const pr of family) {
-    if (!(pr.q !== null && pr.q <= i.fdrQ)) continue;
-    for (const loc of locate(pr)) {
-      const date = pr.dateOf(loc.idx);
-      const lastDate = pr.dateOf(loc.window[1]);
-      const windowEnd = loc.tooRecent ? i.dataThrough : pr.stepDays === 7 ? addDays(lastDate, 6) : lastDate;
-      const dateWindow: [IsoDate, IsoDate] = [pr.dateOf(loc.window[0]), windowEnd > i.dataThrough ? i.dataThrough : windowEnd];
-      const touching = events.filter((ev) => intersects(dateWindow, eventWindow(ev)));
-      const measurement = touching.find((ev) => ev.kind === 'data_anomaly') ?? null;
-      const seasonal = loc.tooRecent ? { checked: false, match: false, ratio: null } : seasonalCheck(i, pr.series, date, loc.effect.ci95, loc.effect.ratio);
-      const cp: ChangePoint = {
-        seriesId: pr.series.id,
-        unit: pr.series.unit,
-        metric: pr.series.metric,
-        date,
-        dateWindow,
-        before: loc.effect.before,
-        after: loc.effect.after,
-        ratio: loc.effect.ratio,
-        ci95: loc.effect.ci95,
-        p: (pr.test as { p: number }).p,
-        q: pr.q,
-        shape: loc.shape,
-        slopePerWeek: loc.slopePerWeek,
-        overlaps: touching.map((ev) => ({ eventId: ev.id, kind: ev.kind, title: ev.title })),
-        localisation: pr.series.primary && !loc.tooRecent ? localiseFor(i, pr, date) : null,
-        seasonalMatch: seasonal.match,
-        tooRecent: loc.tooRecent,
-        mode: pr.mode as 'daily' | 'weekly',
-      };
-      changePoints.push(cp);
-      findings.push(buildFinding(i, pr, cp, loc, { seasonal, measurement, events: touching }));
+  const bySeries: { seriesId: string; f: Finding }[] = [];
+  const appeared = new Map<string, { label: string; date: IsoDate }>();
+  located.forEach(({ pr, loc }, k) => {
+    const date = pr.dateOf(loc.idx);
+    // A rise from a few stray counts is a page starting to appear, not a ratio: it joins the
+    // appearances fact instead of becoming a "+12,000%" finding.
+    if (!loc.tooRecent && loc.effect.sumBefore < MIN_BEFORE && loc.effect.ratio > 1) {
+      if (pr.series.unit.level === 'page') appeared.set(pr.series.unit.key, { label: pr.series.unit.label, date });
+      return;
     }
+    const lastDate = pr.dateOf(loc.back !== null ? loc.back : loc.window[1]);
+    const windowEnd = loc.tooRecent ? i.dataThrough : pr.stepDays === 7 ? addDays(lastDate, 6) : lastDate;
+    const dateWindow: [IsoDate, IsoDate] = [pr.dateOf(loc.window[0]), windowEnd > i.dataThrough ? i.dataThrough : windowEnd];
+    const touching = events.filter((ev) => intersects(dateWindow, eventWindow(ev)));
+    const measurement = touching.find((ev) => ev.kind === 'data_anomaly') ?? null;
+    const seasonal = loc.tooRecent ? { checked: false, match: false, ratio: null } : seasonalCheck(i, pr.series, date, loc.effect.ci95, loc.effect.ratio);
+    const cp: ChangePoint = {
+      seriesId: pr.series.id,
+      unit: pr.series.unit,
+      metric: pr.series.metric,
+      date,
+      dateWindow,
+      before: loc.effect.before,
+      after: loc.effect.after,
+      ratio: loc.effect.ratio,
+      ci95: loc.effect.ci95,
+      p: loc.p,
+      q: q1b[k],
+      shape: loc.shape,
+      slopePerWeek: loc.slopePerWeek,
+      overlaps: touching.map((ev) => ({ eventId: ev.id, kind: ev.kind, title: ev.title })),
+      localisation: pr.series.primary && !loc.tooRecent ? localiseFor(i, pr, date) : null,
+      seasonalMatch: seasonal.match,
+      tooRecent: loc.tooRecent,
+      mode: pr.mode as 'daily' | 'weekly',
+    };
+    changePoints.push(cp);
+    const f = buildFinding(i, pr, cp, loc, { seasonal, measurement, events: touching });
+    findings.push(f);
+    bySeries.push({ seriesId: pr.series.id, f });
+  });
+  guardProportional(i, changePoints, findings, bySeries, intersects);
+  for (const pr of prepared) {
+    if (pr.birth && pr.series.unit.level === 'page' && !appeared.has(pr.series.unit.key)) appeared.set(pr.series.unit.key, { label: pr.series.unit.label, date: pr.birth });
   }
+  const notice = appearanceFinding(i, appeared, EFFECT_CAP_DAYS);
+  if (notice) findings.push(notice);
 
   changePoints.sort((a, b) => cmp(a.date, b.date) || cmp(a.seriesId, b.seriesId));
   findings.sort((a, b) => b.priority - a.priority || cmp(a.id, b.id));

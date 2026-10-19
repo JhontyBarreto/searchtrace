@@ -88,8 +88,9 @@ function device(x: unknown): 'desktop' | 'mobile' | null {
   return null;
 }
 
+/** One write transaction, taken up front (IMMEDIATE) so another process can't interleave its own load. */
 function tx<T>(db: SqlDb, fn: () => T): T {
-  db.exec('BEGIN');
+  db.exec('BEGIN IMMEDIATE');
   try {
     const out = fn();
     db.exec('COMMIT');
@@ -153,18 +154,21 @@ class Interner {
 
   query(text: string): number {
     this.q ??= this.load('q');
-    return this.intern(this.q, 'INSERT INTO q(text) VALUES (?)', text);
+    return this.intern(this.q, 'q', 'text', text);
   }
 
   page(url: string): number {
     this.pg ??= this.load('pg');
-    return this.intern(this.pg, 'INSERT INTO pg(url) VALUES (?)', url);
+    return this.intern(this.pg, 'pg', 'url', url);
   }
 
-  private intern(map: Map<string, number>, sql: string, value: string): number {
+  /** Another process may have added the value since the cache was read, so insert-or-keep, then look the id up. */
+  private intern(map: Map<string, number>, table: 'q' | 'pg', col: 'text' | 'url', value: string): number {
     const hit = map.get(value);
     if (hit !== undefined) return hit;
-    const id = Number(this.db.prepare(sql).run(value).lastInsertRowid);
+    this.db.prepare(`INSERT INTO ${table}(${col}) VALUES (?) ON CONFLICT(${col}) DO NOTHING`).run(value);
+    const row = this.db.prepare(`SELECT id FROM ${table} WHERE ${col} = ?`).get(value) as { id: number } | undefined;
+    const id = Number(row?.id);
     map.set(value, id);
     return id;
   }
@@ -285,6 +289,11 @@ function loadPerRun(db: SqlDb, kind: Kind, src: string, rows: unknown[]): void {
       if (str(r.id)) ins.run(src, r.id, str(r.modified) ? r.modified : null, str(r.begin) ? r.begin : null, JSON.stringify(r));
     }
   }
+}
+
+function sameSha(db: SqlDb, path: string, sha256: string): boolean {
+  const row = db.prepare('SELECT sha256 FROM partitions WHERE path = ?').get(path) as { sha256?: string } | undefined;
+  return row?.sha256 === sha256;
 }
 
 function deleteBySrc(db: SqlDb, kind: Kind, src: string): void {
@@ -460,13 +469,17 @@ export async function syncIndex(db: SqlDb, store: DataStore): Promise<SyncResult
       continue;
     }
     const { meta, rows } = await decode(store, ref, read.bytes);
-    tx(db, () => {
-      if (k) deleteBySrc(db, ref.kind, ref.path);
+    const loaded = tx(db, () => {
+      // Checked again inside the transaction: another process may have loaded it meanwhile.
+      if (sameSha(db, ref.path, read.sha256)) return false;
+      deleteBySrc(db, ref.kind, ref.path);
       loadPerRun(db, ref.kind, ref.path, rows);
       upsertPartition(db, { path: ref.path, sha256: read.sha256, kind: ref.kind, active: true, fetchedAt: meta.fetchedAt });
       setProperty(db, meta.property, false);
+      return true;
     });
-    result.loaded++;
+    if (loaded) result.loaded++;
+    else result.skipped++;
   }
   if (findingsChanged || findingsRemoved > 0) {
     await rebuildFindingHistory(db, store, files.filter((f) => f.kind === 'findings'), bytesCache);

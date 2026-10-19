@@ -145,7 +145,8 @@ export async function readSealedState(store: DataStore, cfg: { backfillMonths: n
     const candidate = x.revision < 2 && !revalidated.has(day) && diffDays(day, today) >= cfg.revalidateAfterDays;
     let fetchedAt = cache.get(x.path) ?? '';
     if (candidate && fetchedAt === '') {
-      const { meta } = await store.readPartition(x.path);
+      // Only the first line: a fresh process (every CI run) would otherwise gunzip every old day.
+      const meta = store.readPartitionMeta ? await store.readPartitionMeta(x.path) : (await store.readPartition(x.path)).meta;
       fetchedAt = typeof meta.fetchedAt === 'string' ? meta.fetchedAt : '';
       cache.set(x.path, fetchedAt);
     }
@@ -440,24 +441,31 @@ async function execute(p: CollectorPlan<GscPlan>, ctx: RunContext): Promise<Phas
     // 4. Per-day calls, `concurrency` days in flight, each day written as soon as it is complete.
     const queue = [...sealDays];
     let stop: unknown = null;
+    const sealOne = async (d: IsoDate): Promise<void> => {
+      const rd = range.get(d);
+      if (!rd) return;
+      const pages = await fetchDay(api, d, anomalies);
+      const rows = dayRows(rd, pages);
+      const slices = sliceMeta(rows, rd, pages);
+      const w = await ctx.store.writePartition(layout.gscDay(d), meta({ kind: 'gsc_day', day: d, revision: 1, dataState: 'final', slices }), rows);
+      result.partitions.push(w.path);
+      result.rows += w.rows;
+      sealedNow++;
+      pending = pending.filter((x) => x !== d);
+      const cut = (Object.entries(slices) as [SliceName, { truncated: boolean }][]).filter(([, v]) => v.truncated).map(([k]) => k);
+      if (cut.length > 0) await event('truncated', d, `Search Console stopped at ${gscTuning.maxRows} rows for: ${cut.join(', ')}`);
+    };
+    // Later runs take the earliest saved day as where the data starts, so on a first run nothing
+    // later may be saved before the first day is: seal it alone first. If it fails, nothing is
+    // saved and the next run is a clean first run again.
+    if (state.firstDataDay === null && queue.length > 0) await sealOne(queue.shift() as IsoDate);
     const worker = async (): Promise<void> => {
       for (;;) {
         if (stop !== null) return;
         const d = queue.shift();
         if (d === undefined) return;
         try {
-          const rd = range.get(d);
-          if (!rd) continue;
-          const pages = await fetchDay(api, d, anomalies);
-          const rows = dayRows(rd, pages);
-          const slices = sliceMeta(rows, rd, pages);
-          const w = await ctx.store.writePartition(layout.gscDay(d), meta({ kind: 'gsc_day', day: d, revision: 1, dataState: 'final', slices }), rows);
-          result.partitions.push(w.path);
-          result.rows += w.rows;
-          sealedNow++;
-          pending = pending.filter((x) => x !== d);
-          const cut = (Object.entries(slices) as [SliceName, { truncated: boolean }][]).filter(([, v]) => v.truncated).map(([k]) => k);
-          if (cut.length > 0) await event('truncated', d, `Search Console stopped at ${gscTuning.maxRows} rows for: ${cut.join(', ')}`);
+          await sealOne(d);
         } catch (e) {
           if (stop === null) stop = e;
           return;

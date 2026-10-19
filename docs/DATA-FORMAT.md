@@ -16,21 +16,22 @@ searchtrace-data/
   config.json                            settings (no secrets)
   meta.json                              { schema: 1, property, createdAt, toolVersion }
   .gitignore
+  .gitattributes                         ledgers and annotations merge as append-only files (merge=union)
   gsc/2026/10/2026-10-03.ndjson.gz       one sealed Search Console day (all five slices)
   gsc/2026/10/2026-10-03.r2.ndjson.gz    a later revision of the same day, when Google changed its numbers
   google/2026/10/<runId>.ndjson.gz       Google events that were new or changed in that run
   crawl/2026/10/<runId>.ndjson.gz        page snapshots from that run
   inspect/2026/10/<runId>.ndjson.gz      URL Inspection results from that run
   serp/2026/10/<runId>.ndjson.gz         AI Overview checks collected in that run
-  findings/2026/10/<runId>.ndjson.gz     findings, written only when they changed
+  findings/2026/10/<runId>.ndjson.gz     findings, written only when they changed (a --wait re-analysis gets its own, later name)
   annotations.ndjson                     your notes from `searchtrace note`
   ledger/runs/2026-10.ndjson             run start and end records
-  ledger/spend/2026-10.ndjson            DataForSEO design, intent, posted, failed, unknown, abandoned, collected
+  ledger/spend/2026-10.ndjson            DataForSEO design, intent, posted, failed, unknown, abandoned, collected, unavailable
   ledger/inspect/2026-10.ndjson          index checks used per Pacific Time day
   ledger/events/2026-10.ndjson           revalidated, revision, truncated and deferred days
   reports/latest.html  latest.md  findings.json
   graphify-out/graph.json  graphify-out/searchtrace.meta.json
-  state/                                 never committed: index.sqlite, gsc-fresh.ndjson.gz, lock, cache/
+  state/                                 never committed: index.sqlite (and index.sqlite.lock while a sync runs), gsc-fresh.ndjson.gz, lock, cron.log, cache/
 ```
 
 The folder is meant to be committed to a **private** repository (or kept on local disk). `state/` is ignored by git because everything in it can be rebuilt or is only useful on the machine that made it.
@@ -141,7 +142,7 @@ Ledger files are append-only NDJSON, one file per stream per UTC month (`ledger/
 | Stream | Records |
 |---|---|
 | `runs` | `RunRecord`: a `start` and an `end` per run, with phase results and the exit status. A start without an end means a run crashed |
-| `spend` | `SpendEvent`: the weekly sampling design, then `intent` (written before every paid request), `posted`, `failed`, `unknown`, `abandoned` and `collected` |
+| `spend` | `SpendEvent`: the weekly sampling design, then `intent` (written before every paid request), `posted`, `failed`, `unknown`, `abandoned`, `collected` and `unavailable`. A `posted` record for a task found at DataForSEO that this folder never recorded (posted from another folder, or a run whose save was lost) carries `postedAt`, when DataForSEO created it; `at` is when it was recorded. An `abandoned` record with `unconfirmed: true` was settled after its week ended without proof either way, and its estimated cost counts as spent. `unavailable` means DataForSEO answered the task with a final error (for example 40102 No Search Results) and it is never fetched again |
 | `inspect` | `{ ptDay, count, runId }`: URL Inspection calls used, for the daily quota |
 | `events` | `{ type: 'revalidated' \| 'revision' \| 'truncated' \| 'deferred', day, detail }` |
 
@@ -152,7 +153,8 @@ The index is a SQLite database built from the files above so analysis can ask qu
 - Each run hashes every partition (sha256) and loads only files that are new or changed. Files that disappeared have their rows removed.
 - For each day only the highest revision is loaded; a new revision replaces that day's rows.
 - `state/gsc-fresh.ndjson.gz` is reloaded on every run.
-- A schema change in a new version of searchtrace drops the index and rebuilds it from the partitions. A damaged index file is deleted and rebuilt the same way.
+- A schema change in a new version of searchtrace drops the index and rebuilds it from the partitions. A damaged index file is deleted and rebuilt the same way; a busy one is left alone.
+- Only one process loads the index at a time (`state/index.sqlite.lock`, cleared automatically if its process is gone), so `searchtrace why` during a run waits for the run's load instead of loading the same files twice. If a load still fails after a retry, the run saves no findings, report or graph built on the half-loaded index.
 
 What the index returns to analysis:
 

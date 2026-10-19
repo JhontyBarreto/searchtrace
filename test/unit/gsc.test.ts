@@ -331,6 +331,22 @@ describe('gscCollector', () => {
     expect((await dayFiles(store)).filter((p) => !p.includes('fresh'))).toHaveLength(45);
   });
 
+  it('a first run never saves a later day before the first data day, so a failed first day is fetched next run', async () => {
+    const store = memoryStore();
+    let failing = true;
+    const fail = (body: GscQueryBody): FakeReply | null =>
+      failing && body.dimensions.join(',') === 'page' && body.startDate === opts.dataStart ? { status: 500, body: { error: { code: 500, message: 'backend error' } } } : null;
+    const first = await run(store, fakeFetch([fakeGsc({ ...opts, override: fail })]).fetch, AT);
+    expect(first.result.status).toBe('partial');
+    // Nothing later than the failed first day was saved, so the next run is a clean first run again.
+    expect((await dayFiles(store)).filter((p) => !p.includes('fresh'))).toEqual([]);
+    failing = false;
+    await run(store, fakeFetch([fakeGsc(opts)]).fetch, '2026-10-07T13:00:00Z');
+    const days = (await dayFiles(store)).filter((p) => !p.includes('fresh'));
+    expect(days[0]).toContain(opts.dataStart);
+    expect(days).toHaveLength(45);
+  });
+
   it('403 on the probe throws a permission error with the fix line', async () => {
     const ff = fakeFetch([
       fakeGsc({ ...opts, override: () => ({ status: 403, body: { error: { code: 403, message: "User does not have sufficient permission for site 'sc-domain:example.com'." } } }) }),

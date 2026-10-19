@@ -4,6 +4,6 @@ Google events around then
   December 2025 core update (Google update, 11 Dec 2025 to 29 Dec 2025)
 
 Findings that cover this date
-  Real change · Estimated  Whole site
+  Real change · Why: Google update (Estimated)  Whole site
     December 2025 core update (11 Dec 2025 to 29 Dec 2025): clicks -24% (Real change), impressions
     -0.1% (Normal wobble).

@@ -13,7 +13,7 @@ import { utcMonth } from '../core/time.js';
 import type { DataStore, LedgerStream, PartitionMeta, SecretRegistry } from '../core/types.js';
 import { checkRelPath, layout, resolveInside } from './layout.js';
 import { appendLedgerLine, parseLedgerText } from './ledger.js';
-import { decodeNdjsonGz, encodeNdjsonGz, gunzipText } from './ndjson.js';
+import { decodeNdjsonGz, decodeNdjsonGzMeta, encodeNdjsonGz, gunzipText } from './ndjson.js';
 
 const TMP_MARK = '.tmp-';
 const TMP_MAX_AGE_MS = 3_600_000;
@@ -100,6 +100,13 @@ export function createDataStore(backend: StoreBackend, secrets: SecretRegistry):
       const data = await backend.readBytes(rel);
       if (!data) throw new StError('internal', `Partition not found: ${rel}`);
       return decodeNdjsonGz<T>(data);
+    },
+
+    async readPartitionMeta(rel: string) {
+      checkRelPath(rel);
+      const data = await backend.readBytes(rel);
+      if (!data) throw new StError('internal', `Partition not found: ${rel}`);
+      return decodeNdjsonGzMeta(data);
     },
 
     async list(prefix: string) {

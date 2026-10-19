@@ -14,6 +14,7 @@
 // fails the phase with the fix line for Full permission. Records are written as one partition.
 import { z } from 'zod';
 import { StError } from '../../core/errors.js';
+import { cli } from '../../core/install.js';
 import { addDays, ptDate } from '../../core/time.js';
 import type {
   Collector,
@@ -379,14 +380,15 @@ async function execute(p: CollectorPlan<InspectionPlan>, ctx: RunContext): Promi
     }
     calls++;
     if (res.status === 401) {
-      fatal = new StError('auth', 'Google turned down the credential while checking index status.', 'Run `npx searchtrace doctor` to see what is wrong with the credential.');
+      fatal = new StError('auth', 'Google turned down the credential while checking index status.', `Run \`${cli('doctor')}\` to see what is wrong with the credential.`);
       return;
     }
     if (res.status === 403) {
       fatal = new StError(
         'permission',
         `URL Inspection is not allowed for ${google.principal} on ${property}.`,
-        `Give ${google.principal} Full permission on ${property} in Search Console (Restricted users may not be allowed to inspect URLs).`,
+        `Give ${google.principal} Full permission on ${property} in Search Console (Restricted users may not be allowed to inspect URLs). ` +
+          'If you can\'t, set "inspection": {"enabled": false} in config.json to stop index checks (reports will then lack crawl dates).',
       );
       return;
     }

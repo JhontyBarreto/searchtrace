@@ -1,8 +1,7 @@
 // Test 53: robots.txt per RFC 9309 (groups, wildcards, $, longest match, Allow on ties, user-agent fallback).
 import { describe, expect, it } from 'vitest';
-import { isAllowed, normalizeRobotsPath, parseRobots, patternMatches, productToken } from '../../src/sources/crawl/robots.js';
-
-const UA = 'searchtrace/0.1 (+https://github.com/searchtrace/searchtrace)';
+import { USER_AGENT as UA } from '../../src/sources/crawl/fetcher.js';
+import { ROBOTS_MAX_BYTES, isAllowed, normalizeRobotsPath, parseRobots, patternMatches, productToken } from '../../src/sources/crawl/robots.js';
 
 // The example file from RFC 9309 section 5.1.
 const RFC_EXAMPLE = `User-Agent: *
@@ -25,6 +24,28 @@ EOF
 `;
 
 describe('robots.txt (RFC 9309)', () => {
+  it('points site owners at a repo the project owns, and keeps the searchtrace product token', () => {
+    expect(UA).toBe('searchtrace/0.1 (+https://github.com/JhontyBarreto/searchtrace)');
+    expect(productToken(UA)).toBe('searchtrace');
+  });
+
+  it('parses a hostile line of spaces in linear time', () => {
+    const hostile = `User-agent: *\na${' '.repeat(ROBOTS_MAX_BYTES - 20)}x`;
+    const t0 = performance.now();
+    parseRobots(hostile, UA);
+    // The old regex took minutes on this line; linear parsing takes well under a millisecond per KiB.
+    expect(performance.now() - t0).toBeLessThan(250);
+  });
+
+  it('keeps a rule whose value contains a line separator character', () => {
+    const r = parseRobots(`User-agent: *\nDisallow: /a${String.fromCharCode(0x2028)}b\n`, UA);
+    expect(isAllowed(r, '/a\u2028b')).toBe(false);
+    // Field handling is unchanged: colons in values, space before the colon, odd fields skipped.
+    const q = parseRobots('User-agent : *\nDisallow: /x:y\n1bad: /z\n-bad: /w\n', UA);
+    expect(isAllowed(q, '/x:y')).toBe(false);
+    expect(isAllowed(q, '/z')).toBe(true);
+  });
+
   it('reads the product token from a full user agent string', () => {
     expect(productToken(UA)).toBe('searchtrace');
     expect(productToken('FooBot/2.1')).toBe('foobot');

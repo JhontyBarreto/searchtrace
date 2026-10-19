@@ -22,7 +22,10 @@
     "graphify",
     "knowledge-graph",
     "cli",
-    "dataforseo"
+    "dataforseo",
+    "core-update",
+    "google-search-console-api",
+    "seo-tools"
   ],
   "type": "module",
   "bin": {
@@ -38,7 +41,8 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json --sourceMap false && node scripts/build-info.mjs",
+    "prepare": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "node scripts/lint.mjs",
     "test": "vitest run",

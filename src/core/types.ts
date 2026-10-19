@@ -69,7 +69,8 @@ export interface InspectionRecord {
 // ---------- Page snapshots ----------
 export type FetchOutcome =
   | 'ok' | 'not_modified' | 'http_error' | 'blocked_challenge' | 'timeout'
-  | 'too_large' | 'robots_disallowed' | 'not_html' | 'off_property' | 'network_error';
+  | 'too_large' | 'robots_disallowed' | 'not_html' | 'off_property' | 'network_error'
+  | 'private_address';
 export interface PageFields {
   title: string | null;
   metaDescription: string | null;
@@ -155,9 +156,13 @@ export type SpendEvent = { at: Instant; runId: string } & (
       units: { intentKey: string; keyword: string; device: Device; pi: number; design: SampleDesignKind; weekday: number }[];
       location?: { locationCode: number; languageCode: string } }   // the location baked into that week's intent keys
   | { type: 'intent'; intentKey: string; tag: string; estUsd: number }
-  | { type: 'posted'; intentKey: string; tag: string; taskId: string; costUsd: number }
-  | { type: 'failed' | 'unknown' | 'abandoned'; intentKey: string; tag: string; reason: string }
-  | { type: 'collected'; intentKey: string; taskId: string; partition: string });
+  // postedAt: when DataForSEO created the task, for a task adopted from id_list later (at is when it was recorded).
+  | { type: 'posted'; intentKey: string; tag: string; taskId: string; costUsd: number; postedAt?: Instant }
+  // unconfirmed: settled after its week ended without proof either way, so its worst-case cost counts as spent.
+  | { type: 'failed' | 'unknown' | 'abandoned'; intentKey: string; tag: string; reason: string; unconfirmed?: boolean }
+  | { type: 'collected'; intentKey: string; taskId: string; partition: string }
+  // DataForSEO answered a task with a final error (for example 40102 No Search Results): never fetched again.
+  | { type: 'unavailable'; intentKey: string; taskId: string; reason: string });
 
 // ---------- Google events ----------
 export type GoogleEventKind = 'core' | 'spam' | 'discover' | 'other_ranking' | 'outage' | 'data_anomaly';
@@ -211,6 +216,8 @@ export interface DataStore {
   readonly root: string;
   writePartition<T>(rel: string, meta: PartitionMeta, rows: Iterable<T>): Promise<{ path: string; sha256: string; rows: number }>;
   readPartition<T>(rel: string): Promise<{ meta: PartitionMeta; rows: T[] }>;
+  /** Only the {"_meta": ...} line, without decoding the rows (optional: callers fall back to readPartition). */
+  readPartitionMeta?(rel: string): Promise<PartitionMeta>;
   list(prefix: string): Promise<{ path: string; size: number }[]>;          // sorted by path; prefix relative to root
   exists(rel: string): Promise<boolean>;
   append(stream: LedgerStream, rec: object): Promise<void>;                  // ledger/<stream>/YYYY-MM.ndjson, fsync
@@ -335,6 +342,8 @@ export interface RunContext {
   flags: RunFlags;
   google: GoogleAuth | null;                                // null when offline or auth failed
   env: Record<string, string | undefined>;
+  /** Looks up a host's addresses so the crawler can refuse private ones. Absent in tests and the demo. */
+  resolveHost?: (host: string) => Promise<string[]>;
 }
 export interface PlanLine { group: 'free' | 'paid'; label: string; detail: string }
 export interface CollectorPlan<P> { lines: PlanLine[]; estRequests: number; estUsd: number; payload: P; skip: string | null }
@@ -353,7 +362,12 @@ export interface GscPlanState { today: IsoDate; firstIncompleteDate: IsoDate | n
 export interface UpdatesPlan { url: string }
 export interface InspectionPlan { budget: number; queue: { url: string; reason: InspectReason }[] }
 export interface CrawlPlan { origin: string; urls: string[]; keyframe: boolean }
-export interface SerpCollectPlan { reconcileFrom: Instant; pendingTaskIds: string[] }
+export interface SerpCollectPlan {
+  reconcileFrom: Instant;
+  pendingTaskIds: string[];
+  /** The pending tasks this run posted: the --wait loop waits for these only, not for older stragglers. */
+  thisRunTaskIds?: string[];
+}
 export interface SerpPostPlan { isoWeek: string; budgetUsd: number; design: Extract<SpendEvent, { type: 'design' }> | null; due: { intentKey: string; keyword: string; device: Device; pi: number; design: SampleDesignKind }[] }
 
 // ---------- Analysis: shared ----------

@@ -60,10 +60,12 @@ describe('copy deck', () => {
       clean(renderAlt(k, FULL_SLOTS));
       clean(renderAlt(k, {}));
     }
+    // A date to wait for and a next step are not falsifiers, so they get their own prefixes.
+    const prefix: Record<string, string> = { more_data: "When we'll know: ", record_changes: 'Next step: ' };
     for (const k of FALSIFIER_KEYS) {
       const s = renderFalsifier(k, FULL_SLOTS);
       clean(s);
-      expect(s.startsWith('What would prove this wrong: ')).toBe(true);
+      expect(s.startsWith(prefix[k] ?? 'What would prove this wrong: '), k).toBe(true);
     }
   });
 
@@ -102,8 +104,9 @@ describe('copy deck', () => {
     expect(up).toContain('You climbed in the rankings');
     expect(up).toContain('earned');
     expect(renderSentence('demand', { ...FULL_SLOTS, direction: 'up', yoy: 0.08, pct: 0.1 })).toMatch(/^More people searched\..*rose 10%.*gained clicks/);
+    // A section reads as "pages under /blog/" in a sentence, never as the raw glob.
     expect(renderSentence('change_point', { ...FULL_SLOTS })).toBe(
-      'Impressions on /blog/* dropped by 10% around 14 Sep 2026 (most likely between 12 Sep 2026 and 15 Sep 2026).',
+      'Impressions on pages under /blog/ dropped by 10% around 14 Sep 2026 (most likely between 12 Sep 2026 and 15 Sep 2026).',
     );
   });
 
@@ -122,7 +125,10 @@ describe('copy deck', () => {
     expect(renderSentence('update_row', { update: 'Discover update', status: 'skipped_discover' })).toBe('Discover update: a Discover update, not web search, so skipped.');
     expect(renderSentence('update_row', { update: 'X', dates: 'a to b', clicks_pct: -0.12, clicks_real: 'signal', impr_pct: 0.01, impr_real: 'noise', status: 'measured' }))
       .toBe('X (a to b): clicks -12% (Real change), impressions +1% (Normal wobble).');
-    expect(renderSentence('freshness', { date: '2026-10-03', n: 3 })).toContain('so the last 3 days are left out');
+    // No day count in the finding (it would come from state/, D24): the report adds the live count by the chart.
+    expect(renderSentence('freshness', { date: '2026-10-03', n: 3 })).toBe(
+      'Final data runs to 3 Oct 2026 (Pacific Time, as Google reports it). Google finalises data 2 to 3 days late, so newer days are kept out of every comparison.',
+    );
   });
 
   it('derives level, direction and power slots from a finding', () => {
@@ -221,6 +227,16 @@ describe('slot conventions seen from the analysis package', () => {
   it('never calls normal wobble rare when the frequency is unknown', () => {
     expect(renderSentence('noise', { pct: -0.03 })).toBe('This is normal wobble. Clicks moved -3%, which is within normal ups and downs for your site. Nothing to act on.');
     expect(renderSentence('noise', { pct: -0.03, freq: 0.5 })).toContain('happen about 1 in 2 four-week periods');
+  });
+
+  it('says why an AI Overview estimate could not be made, never "no clicks in the weeks before" (aio-side-by-side-wrong-template)', () => {
+    const base = { cpw: 0, mde: 1, weeks: 4, not_measurable: 1, estimator: 'did' };
+    expect(renderSentence('not_enough_data', { ...base, aio_reason: 'single_check' }))
+      .toBe("Not enough data to compare yet. We've only checked these searches once so far, and comparing before and after needs a second check of each.");
+    expect(renderSentence('not_enough_data', { ...base, estimator: 'cross_section', aio_reason: 'coverage' })).toContain('similar positions both with and without');
+    expect(renderSentence('not_enough_data', { ...base, aio_reason: 'groups' })).toContain('at least 20 searches with an AI Overview and 20 without');
+    expect(renderSentence('not_enough_data', { ...base, aio_reason: 'clicks' })).toContain('too few clicks to compare');
+    for (const r of ['single_check', 'coverage', 'groups', 'clicks']) expect(renderSentence('not_enough_data', { ...base, aio_reason: r })).not.toContain('weeks before');
   });
 
   it('words an IdCheck name given as reason_text instead of printing the keyword', () => {

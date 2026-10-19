@@ -8,22 +8,40 @@
 // "Day 0" (no search has 2 checks yet): single_* stand in for present/absent in the
 // cross-section only, and IdCheck('single_check') fails, so it can never be a signal (D11).
 //
-// Strata are (baseline position bucket, device). With HT weights w = 1/pi and E = sum I*f(p):
+// Strata are (baseline position bucket, device). With Horvitz-Thompson weights w and E = sum I*f(p):
 //   R_gs = sum w C / sum w E over group g in stratum s
 //   cross-section: CF = sum_s E_U,s,c * R_N,s,c          gap = Obs_U,c / CF - 1
 //   DiD:           CF = sum_s E_U,s,c * R_U,s,b * R_N,s,c / R_N,s,b    tau = Obs_U,c / CF - 1
 //   placebo:       the DiD with b -> pre1 and c -> pre2 (labels from the current window)
 // Inference is a query-cluster bootstrap within stratum x group, carrying the weights.
 //
+// Weights: a search enters the estimators only as present or absent, which needs 2 or more checks
+// over the weekly designs, so its inclusion probability is not one week's pi. Under coordinated
+// weekly sampling (one permanent random number per search, drawn when u < pi_week; see
+// sources/dataforseo/sample.ts) it has 2 or more checks exactly when u < the second-largest weekly
+// pi, and the drawn weeks are the ones with the largest pi, so the weight is 1 / (the second-largest
+// pi among its own checks). A day-0 single check uses 1 / (its largest pi). The ratio estimator
+// is approximately, not exactly, unbiased.
+//
+// Apportioning (5.11.4): each uncited search in a kept DiD stratum gets a_q = CF_q |tau| with
+// CF_q = E_q,c R_U,s,b R_N,s,c / R_N,s,b, so sum w a_q = the DiD's missing clicks. Per search it is
+// capped at its own same-position loss as a display guard: the per-search numbers are shares that
+// need not add up to the site estimate.
+//
 // Slot conventions for WP-E and WP-F (numbers are raw; F formats them):
 //   aio_effect (unit: the site, key 'site'; one finding per estimator): estimator 'cross_section' | 'did';
 //     wording 'comparison_not_proof' (cross-section) or 'estimate_not_measured' (DiD); x = tau,
 //     lo/hi = its 95% range (raw fractions, as WP-E passes them for aio_not_cited); direction;
-//     u/n/cit/intermittent counts; coverage; strata; missing (clicks). not_enough_data adds cpw,
-//     mde, weeks (observed), weeks_needed, pct, impr_sentence ''. cant_separate adds date and check = the failed IdCheck
-//     name (F maps it to words). single_check is 'yes' when day-0 single checks were used.
+//     u/n/cit/intermittent counts; coverage; strata; missing (clicks). not_enough_data adds aio_reason
+//     (what failed: single_check, coverage, groups or clicks; F words it), cur_cpw (current clicks a week
+//     on the uncited group), mde, weeks (observed), weeks_needed, pct, impr_sentence ''. cant_separate
+//     adds date and check = the failed IdCheck name (F maps it to words). single_check is 'yes' when
+//     day-0 single checks were used.
 //   aio_fact: query, device, k, n, status, cited_text 'cites_you' | 'doesnt_cite_you' | 'none'
-//     (F maps it to words), domains (comma-separated, untrusted), our_rank (0 = not in the top 10).
+//     (F maps it to words), domains (the first 3, comma-separated, untrusted), more_domains (how many
+//     more), our_rank (0 = not in the top 10), attributed (estimated clicks lost to the AI Overview).
+//     topDomains are ranked by checks citing them, then URLs cited, then where the AI Overview first
+//     cites them, never alphabetically.
 import { findingId } from '../core/ids.js';
 import { addDays, diffDays, ptDate } from '../core/time.js';
 import { domainMatches, normalizeUrl } from '../core/url.js';
@@ -38,6 +56,8 @@ export const ANALYZER = { name: 'aio', version: '1' } as const;
 export const FDR_Q = 0.1; // the config default, used when AioInput.fdrQ is not given (family 4 is AIO-only)
 export const FACT_FINDINGS_CAP = 200;
 export const FACTS_CAP = 1000;
+/** Cited domains kept per search (the report shows the first 3 and counts the rest). */
+const MAX_DOMAINS = 20;
 const MIN_PER_GROUP = 20;
 const MIN_E = 30;
 const MIN_STRATA = 2;
@@ -325,7 +345,7 @@ function templateFor(v: VerdictResult): TemplateId {
 
 function estimateFinding(
   i: AioInput, est: Estimation, estimator: 'cross_section' | 'did', v: VerdictResult, q: number | null,
-  extra: { groups: AioEstimate['groups']; singles: boolean; placebo: AioEstimate['placebo'] },
+  extra: { groups: AioEstimate['groups']; singles: boolean; placebo: AioEstimate['placebo']; dayZero: boolean },
 ): Finding {
   const W = i.windows;
   const weeks = (diffDays(W.current[0], W.current[1]) + 1) / 7;
@@ -345,12 +365,16 @@ function estimateFinding(
   };
   if (v.verdict === 'underpowered') {
     Object.assign(slots, {
-      cpw: est.obs / weeks, mde: v.power?.mde ?? 1, weeks: Math.round(weeks), weeks_needed: v.power?.weeksNeeded ?? 0, pct: tau ?? 0, impr_sentence: '',
+      aio_reason: aioReason(est, estimator, extra.dayZero),
+      cur_cpw: est.obs / weeks, mde: v.power?.mde ?? 1, weeks: Math.round(weeks), weeks_needed: v.power?.weeksNeeded ?? 0, pct: tau ?? 0, impr_sentence: '',
       not_measurable: v.power?.notMeasurable ? 'yes' : 'no',
     });
   }
   if (v.verdict === 'unclear') Object.assign(slots, { date: W.current[1], check: v.failed[0]?.name ?? 'coverage' });
-  if (v.verdict === 'noise') Object.assign(slots, { pct: tau ?? 0, freq: '' });
+  if (v.verdict === 'noise') {
+    Object.assign(slots, { pct: tau ?? 0, verdict_reason: v.reason, delta: i.delta > 0 ? i.delta : 0.15 });
+    if (est.ci95) Object.assign(slots, { ci_lo: est.ci95[0], ci_hi: est.ci95[1] });
+  }
   const absolute = est.missing === null ? null : -est.missing;
   const checkDate = addDays(W.current[1], v.power?.weeksNeeded ? Math.ceil(v.power.weeksNeeded * 7) : 28);
   return {
@@ -388,6 +412,19 @@ function estimateFinding(
   };
 }
 
+/**
+ * Why an estimate could not be made, checked in order: one check per search so far (before and
+ * after needs a second), too few searches at comparable positions, too few searches in a group, or
+ * too few clicks. The current-window clicks are no reason by themselves: "no clicks in the weeks
+ * before" was the old (wrong) wording for all of these.
+ */
+function aioReason(est: Estimation, estimator: 'cross_section' | 'did', dayZero: boolean): string {
+  if (dayZero && estimator === 'did') return 'single_check';
+  if (est.kept.length < MIN_STRATA || est.coverage < MIN_COVERAGE) return 'coverage';
+  if (est.nU < MIN_PER_GROUP || est.nN < MIN_PER_GROUP) return 'groups';
+  return 'clicks';
+}
+
 function factFinding(i: AioInput, f: AioQueryFact, checks: SerpObservation[], eC: number): Finding {
   const last = checks[checks.length - 1];
   const first = checks[0];
@@ -400,10 +437,9 @@ function factFinding(i: AioInput, f: AioQueryFact, checks: SerpObservation[], eC
     windows: null,
     date: ptDate(last.observedAt),
     dateWindow: [ptDate(first.observedAt), ptDate(last.observedAt)],
-    effect: {
-      estimate: f.checks ? f.aioChecks / f.checks : null, ci95: null,
-      absolute: f.attributedClicks === null ? null : -f.attributedClicks, absoluteCi95: null, p: null, q: null,
-    },
+    // A sighting is a measured fact; its share of the AI Overview loss is an estimate, so it is a
+    // slot (worded as estimated) and never the fact's effect. The presence share is k of n, not a change.
+    effect: { estimate: null, ci95: null, absolute: null, absoluteCi95: null, p: null, q: null },
     real: 'signal',
     reason: 'fact',
     cause: f.aioChecks > 0 ? 'ai_overview' : null,
@@ -414,7 +450,8 @@ function factFinding(i: AioInput, f: AioQueryFact, checks: SerpObservation[], eC
     template: 'aio_fact',
     slots: {
       query: f.keyword, device: f.device, k: f.aioChecks, n: f.checks, status: f.status, cited_text: citedText,
-      domains: f.topDomains.join(', '), our_rank: f.ourRank ?? 0, expected_clicks: eC,
+      domains: f.topDomains.slice(0, 3).join(', '), more_domains: Math.max(0, f.topDomains.length - 3), our_rank: f.ourRank ?? 0, expected_clicks: eC,
+      ...(f.attributedClicks !== null ? { attributed: f.attributedClicks } : {}),
       title_rewritten: f.titleRewritten === null ? 'unknown' : f.titleRewritten ? 'yes' : 'no',
     },
     evidence: [{
@@ -429,6 +466,79 @@ function factFinding(i: AioInput, f: AioQueryFact, checks: SerpObservation[], eC
     analyzer: { ...ANALYZER },
     priority: 5 * Math.max(1, Math.abs(f.attributedClicks ?? 0)),
   };
+}
+
+// ---------- weights, apportioning and cited sites ----------
+
+/**
+ * The Horvitz-Thompson weight of a searched (keyword, device): 1 / the second-largest pi among its
+ * checks for present or absent (2 or more checks under coordinated weekly draws), 1 / the largest
+ * for a single check. A pi outside (0, 1] counts as 1.
+ */
+export function inclusionWeight(checks: SerpObservation[], status: AioStatus | null): number {
+  const pis = checks.map((c) => (c.pi > 0 && c.pi <= 1 ? c.pi : 1)).sort((a, b) => b - a);
+  if (!pis.length) return 1;
+  const pi = (status === 'present' || status === 'absent' || status === 'intermittent') && pis.length >= 2 ? pis[1] : pis[0];
+  return 1 / pi;
+}
+
+/**
+ * Per uncited search (group U) in a kept DiD stratum, its counterfactual factor R_U,s,b R_N,s,c / R_N,s,b
+ * (CF_q = E_q,c times this), from the weighted stratum sums.
+ */
+function counterfactualFactors(qs: QueryData[], kept: string[]): Map<string, number> {
+  const out = new Map<string, number>();
+  const keep = new Set(kept);
+  const sums = new Map<string, { Ucb: number; Ueb: number; Ncb: number; Neb: number; Ncc: number; Nec: number }>();
+  for (const q of qs) {
+    if (q.stratum === null || !keep.has(q.stratum) || q.group === 'Cit') continue;
+    const t = sums.get(q.stratum) ?? { Ucb: 0, Ueb: 0, Ncb: 0, Neb: 0, Ncc: 0, Nec: 0 };
+    if (q.group === 'U') {
+      t.Ucb += q.w * q.C.b;
+      t.Ueb += q.w * q.E.b;
+    } else {
+      t.Ncb += q.w * q.C.b;
+      t.Neb += q.w * q.E.b;
+      t.Ncc += q.w * q.C.c;
+      t.Nec += q.w * q.E.c;
+    }
+    sums.set(q.stratum, t);
+  }
+  for (const q of qs) {
+    if (q.group !== 'U' || q.stratum === null) continue;
+    const t = sums.get(q.stratum);
+    if (!t || !(t.Ueb > 0) || !(t.Neb > 0) || !(t.Nec > 0) || !(t.Ncb > 0)) continue;
+    out.set(q.key, (t.Ucb / t.Ueb) * ((t.Ncc / t.Nec) / (t.Ncb / t.Neb)));
+  }
+  return out;
+}
+
+/**
+ * Domains an AI Overview cites, other than the site itself: by how many checks cite them, then how
+ * many of their URLs are cited, then where the AI Overview first cites them (refs are in document
+ * order), and only then by name.
+ */
+export function rankDomains(checks: SerpObservation[], site: string): string[] {
+  const by = new Map<string, { checks: number; urls: Set<string>; first: number }>();
+  for (const c of checks) {
+    const seen = new Set<string>();
+    (c.aio?.refs ?? []).forEach((r, idx) => {
+      const d = stripWww(r.domain);
+      if (!d || domainMatches(d, site)) return;
+      const t = by.get(d) ?? { checks: 0, urls: new Set<string>(), first: Infinity };
+      if (!seen.has(d)) {
+        t.checks++;
+        seen.add(d);
+      }
+      t.urls.add(r.url);
+      t.first = Math.min(t.first, idx);
+      by.set(d, t);
+    });
+  }
+  return [...by.entries()]
+    .sort((a, b) => b[1].checks - a[1].checks || b[1].urls.size - a[1].urls.size || a[1].first - b[1].first || (a[0] < b[0] ? -1 : 1))
+    .slice(0, MAX_DOMAINS)
+    .map(([d]) => d);
 }
 
 // ---------- the analyzer ----------
@@ -455,8 +565,7 @@ export function analyzeAio(i: AioInput): AioOutput {
     const t = totals.get(g.key);
     const pB = t && t.iB > 0 ? t.psB / t.iB : Number.NaN;
     const b = bucketOf(pB);
-    const latestPi = g.current[g.current.length - 1]?.pi ?? 1;
-    const w = latestPi > 0 && latestPi <= 1 ? 1 / latestPi : 1;
+    const w = inclusionWeight(g.current, st.status);
     const base = {
       key: g.key, stratum: b === null ? null : `${b}|${g.device}`, w,
       C: t?.C ?? { b: 0, c: 0, pre1: 0, pre2: 0 }, E: t?.E ?? { b: 0, c: 0, pre1: 0, pre2: 0 },
@@ -511,8 +620,8 @@ export function analyzeAio(i: AioInput): AioOutput {
     U: qsFull.filter((q) => q.group === 'U').length, N: qsFull.filter((q) => q.group === 'N').length,
     Cit: qsFull.filter((q) => q.group === 'Cit').length, intermittent,
   };
-  const fCs = estimateFinding(i, cs, 'cross_section', vCs, qOf(0), { groups: dayZero ? groupCounts : fullCounts, singles: dayZero, placebo: null });
-  const fDd = estimateFinding(i, dd, 'did', vDd, qOf(1), { groups: fullCounts, singles: false, placebo });
+  const fCs = estimateFinding(i, cs, 'cross_section', vCs, qOf(0), { groups: dayZero ? groupCounts : fullCounts, singles: dayZero, placebo: null, dayZero });
+  const fDd = estimateFinding(i, dd, 'did', vDd, qOf(1), { groups: fullCounts, singles: false, placebo, dayZero });
   const estimates: AioEstimate[] = [
     {
       estimator: 'cross_section', tau: cs.tau, ci95: cs.ci95, missingClicks: cs.missing, missingCi95: cs.missingCi95,
@@ -526,28 +635,22 @@ export function analyzeAio(i: AioInput): AioOutput {
 
   // Per-query facts and apportioning (5.11.4).
   const didSignal = vDd.verdict === 'signal' && dd.tau !== null;
+  const cfOf = counterfactualFactors(qsFull, dd.kept);
   const facts: AioQueryFact[] = [];
   const factRows: { fact: AioQueryFact; checks: SerpObservation[]; eC: number }[] = [];
   for (const g of groups) {
     const checks = g.current.length ? g.current : g.all;
     const st = g.current.length ? (statusByKey.get(g.key) as ReturnType<typeof statusOf>) : statusOf(g.all, site);
     const status: AioStatus = st.status ?? 'single_absent';
-    const domains = new Map<string, number>();
-    for (const c of checks) {
-      for (const d of new Set((c.aio?.refs ?? []).map((r) => stripWww(r.domain)))) {
-        if (!d || domainMatches(d, site)) continue;
-        domains.set(d, (domains.get(d) ?? 0) + 1);
-      }
-    }
-    const topDomains = [...domains.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, 3).map(([d]) => d);
+    const topDomains = rankDomains(checks, site);
     const last = checks[checks.length - 1];
     const withOurs = [...checks].reverse().find((c) => c.ours !== null) ?? null;
     const pageTitle = withOurs?.ours ? pageTitleFor(i.pageTitles, withOurs.ours.url) : null;
     const eC = totals.get(g.key)?.E.c ?? 0;
     const sq = i.samePosByQuery.get(g.key);
-    const uncitedPresent = (status === 'present' || status === 'single_present') && !st.cited;
-    const attributed = didSignal && uncitedPresent && sq !== undefined && sq < 0
-      ? Math.min(Math.abs(sq), eC * Math.abs(dd.tau as number))
+    const factor = cfOf.get(g.key);
+    const attributed = didSignal && factor !== undefined && sq !== undefined && sq < 0
+      ? Math.min(Math.abs(sq), eC * factor * Math.abs(dd.tau as number))
       : null;
     const fact: AioQueryFact = {
       keyword: g.keyword, device: g.device, checks: checks.length, aioChecks: st.k, status, cited: st.cited, topDomains,

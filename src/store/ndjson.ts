@@ -1,7 +1,7 @@
 // Gzip NDJSON codec with a leading {"_meta": ...} line, plus a JSON parser that drops __proto__ keys.
 // Owner: WP-A (internal to the store; the index and http modules reuse parseJsonSafe).
 import { promisify } from 'node:util';
-import { gunzip, gzip } from 'node:zlib';
+import { createGunzip, gunzip, gzip } from 'node:zlib';
 import { StError } from '../core/errors.js';
 import type { PartitionMeta } from '../core/types.js';
 
@@ -88,4 +88,37 @@ export function parseNdjsonText<T>(text: string): { meta: PartitionMeta; rows: T
 
 export async function decodeNdjsonGz<T>(data: Uint8Array): Promise<{ meta: PartitionMeta; rows: T[] }> {
   return parseNdjsonText<T>(await gunzipText(data));
+}
+
+/**
+ * The {"_meta": ...} line of a gzipped partition, decompressing only until the first newline.
+ * Reading every old day's meta this way costs milliseconds where a full decode costs seconds.
+ */
+export async function decodeNdjsonGzMeta(data: Uint8Array): Promise<PartitionMeta> {
+  const head = await new Promise<string>((resolve, reject) => {
+    const z = createGunzip();
+    const chunks: Buffer[] = [];
+    let done = false;
+    const finish = (): void => {
+      if (done) return;
+      done = true;
+      z.destroy();
+      resolve(Buffer.concat(chunks).toString('utf8'));
+    };
+    z.on('data', (c: Buffer) => {
+      chunks.push(c);
+      if (c.includes(0x0a)) finish();
+    });
+    z.on('end', finish);
+    z.on('error', (e) => {
+      if (done) return;
+      done = true;
+      reject(e);
+    });
+    z.end(data);
+  }).catch(() => {
+    throw new StError('internal', 'A partition file is not valid gzip. Delete it or restore it from git.');
+  });
+  const line = head.split('\n', 1)[0];
+  return parseNdjsonText(`${line}\n`).meta;
 }

@@ -9,9 +9,13 @@
 //
 // Bootstrap (5.5.5): per replicate the curve is redrawn and every unit's clicks are redrawn from a
 // Poisson in both windows (a sum of independent cell Poissons is Poisson, so drawing per unit is
-// the same distribution as drawing per cell; the clamp C* <= I is applied per unit). Scopes with
-// 30 or more units also resample their units with replacement. One set of unit redraws per
-// replicate is shared by every scope, which keeps the cost at units x B instead of scopes x cells x B.
+// the same distribution as drawing per cell; the clamp C* <= I is applied per unit). One set of
+// unit redraws per replicate is shared by every scope, which keeps the cost at units x B instead of
+// scopes x cells x B. Units are never resampled: every scope (site, section, page, search) is a
+// census of its units, so "which units happened to be drawn" is not uncertainty about its total.
+// These ranges answer "how sure are we of the split, given these two windows"; whether a scope's
+// total change is real is decided in index.ts from one period-comparison SE that also carries the
+// site's period-to-period variance (the bars always sum to the total, whatever the curve).
 import type {
   AnalysisUnit, BarGroup, Bars, Cell, CtrCurve, Device, PageDay, Rng, ScopeDecomposition, Segment, UnitDecomposition, UnitFlag, UnitKey,
   Windows, WindowStats,
@@ -28,7 +32,6 @@ export const GROUPS: readonly Group[] = ['demand', 'ranking', 'samePos', 'aioCit
 const PAGE_ONE = 10.5;
 const MIN_STABLE_UNITS = 10;
 const SPARSE_REMAINDER = 5;
-const RESAMPLE_MIN_UNITS = 30;
 const CELL_BUDGET = 3e8;
 const MIN_B = 200;
 
@@ -360,18 +363,43 @@ export interface ScopeBoot {
   pTotal: number;
 }
 
+/**
+ * The share of a scope's ranking and same-spot movement held by the anonymised remainder (the
+ * searches Google doesn't name), by absolute mass so named and hidden bars of opposite sign still
+ * count. The remainder's average position mixes a changing set of searches, so a part that is
+ * mostly hidden searches is rough (5.5.3): the report marks it Possible.
+ */
+export interface RemainderShare { ranking: number; samePos: number }
+
+/** A scope decomposition plus its remainder shares. The extra field rides along in AnalysisOutput.scopes. */
+export type ScopeDecompositionExt = ScopeDecomposition & { remainderShare: RemainderShare };
+
+/** The remainder shares of a scope decomposition, or zeros when it has none (an older output). */
+export function remainderShareOf(d: ScopeDecomposition): RemainderShare {
+  return (d as Partial<ScopeDecompositionExt>).remainderShare ?? { ranking: 0, samePos: 0 };
+}
+
 /** Point decomposition of a scope: sums of its units' bars. */
-export function scopeDecomposition(spec: ScopeSpec, units: UnitDecomposition[], boot: ScopeBoot | null): ScopeDecomposition {
+export function scopeDecomposition(spec: ScopeSpec, units: UnitDecomposition[], boot: ScopeBoot | null): ScopeDecompositionExt {
   const bars = zeroBars();
   let base = 0;
   let cur = 0;
   let namedClicks = 0;
+  const mass = { rank: 0, rankHidden: 0, same: 0, sameHidden: 0 };
   for (const m of spec.members) {
     const u = units[m];
     addInto(bars, u.bars);
     base += u.base.C;
     cur += u.cur.C;
+    const r = Math.abs(u.bars.rank + u.bars.visibility);
+    const sp = Math.abs(u.bars.samePos);
+    mass.rank += r;
+    mass.same += sp;
     if (u.key.query !== null) namedClicks += u.base.C + u.cur.C;
+    else {
+      mass.rankHidden += r;
+      mass.sameHidden += sp;
+    }
   }
   return {
     unit: spec.unit,
@@ -383,6 +411,10 @@ export function scopeDecomposition(spec: ScopeSpec, units: UnitDecomposition[], 
     pTotal: boot ? boot.pTotal : null,
     units: spec.members.length,
     namedClickShare: base + cur > 0 ? namedClicks / (base + cur) : 0,
+    remainderShare: {
+      ranking: mass.rank > 0 ? mass.rankHidden / mass.rank : 0,
+      samePos: mass.same > 0 ? mass.sameHidden / mass.same : 0,
+    },
   };
 }
 
@@ -431,8 +463,6 @@ export interface BootstrapOptions {
   curve: CtrCurve;
   /** Shared redraws (curve and unit clicks). */
   rng: Rng;
-  /** Unit resampling for one scope. */
-  scopeRng: (scope: ScopeSpec) => Rng;
   /** Quasi-Poisson inflation: T*_adj = T + sqrt(phi) (T* - T). */
   phi: number;
 }
@@ -447,7 +477,6 @@ export function bootstrapScopes(model: WaterfallModel, units: UnitDecomposition[
     : null;
   const rep = new Float64Array(nU * NK);
   const sums = scopes.map(() => Array.from({ length: NK }, () => new Float64Array(B)));
-  const scopeRngs = scopes.map((s) => (s.members.length >= RESAMPLE_MIN_UNITS ? o.scopeRng(s) : null));
 
   for (let b = 0; b < B; b++) {
     const curveStar = o.curve.redraw(o.rng);
@@ -474,10 +503,9 @@ export function bootstrapScopes(model: WaterfallModel, units: UnitDecomposition[
     }
     for (let s = 0; s < scopes.length; s++) {
       const members = scopes[s].members;
-      const r = scopeRngs[s];
       const acc = sums[s];
       for (let n = 0; n < members.length; n++) {
-        const k = r ? members[Math.floor(r() * members.length)] : members[n];
+        const k = members[n];
         for (let j = 0; j < NK; j++) acc[j][b] += rep[k * NK + j];
       }
     }

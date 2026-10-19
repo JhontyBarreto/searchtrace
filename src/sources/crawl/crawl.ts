@@ -26,7 +26,7 @@ import { defaultOrigins, isOnProperty, normalizeUrl, pathOf } from '../../core/u
 import { createLimiter } from '../../http/limiter.js';
 import { layout } from '../../store/layout.js';
 import { extractFields, fieldsHashOf } from './extract.js';
-import { USER_AGENT, fetchPage, guardedGet, loadRobots, urlAllowed, type PageFetch, type RobotsResult } from './fetcher.js';
+import { USER_AGENT, fetchPage, guardedGet, loadRobots, originPort, urlAllowed, type PageFetch, type ResolveHost, type RobotsResult } from './fetcher.js';
 import { isAllowed } from './robots.js';
 import { parseSitemapXml } from './sitemap.js';
 
@@ -219,6 +219,8 @@ const PROBLEM_NOTES: Partial<Record<FetchOutcome, (n: number) => string>> = {
   network_error: (n) => `${n} ${n === 1 ? 'page' : 'pages'} could not be reached.`,
   too_large: (n) => `${n} ${n === 1 ? 'page was' : 'pages were'} bigger than the size limit (crawl.maxBytes).`,
   off_property: (n) => `${n} ${n === 1 ? 'page redirects' : 'pages redirect'} off your site, so the redirect was not followed.`,
+  private_address: (n) => `${n} ${n === 1 ? 'page points' : 'pages point'} at a private network address, so ${n === 1 ? 'it was' : 'they were'} not fetched. ` +
+    'If that is your own network (split DNS or a hosts-file entry), set crawl.allowPrivateAddresses to true in config.json.',
   not_html: (n) => `${n} ${n === 1 ? 'address is' : 'addresses are'} not a web page (for example a PDF or an image).`,
 };
 
@@ -271,13 +273,16 @@ async function crawl(
   const sitemapFetch = counted('crawl.sitemap');
   const pacer = createPacer(c.delayMs, signal);
   const notes: string[] = [];
+  // Only the site's own port, and (unless turned off) no host that resolves to a private address.
+  const port = originPort(ctx.config.siteOrigin);
+  const guard = { ...(port ? { port } : {}), ...(ctx.resolveHost && !c.allowPrivateAddresses ? { resolveHost: ctx.resolveHost } : {}) };
 
   // robots.txt per origin, loaded once (concurrent callers share the promise).
   const robots = new Map<string, Promise<RobotsResult>>();
   const robotsFor = (origin: string): Promise<RobotsResult> => {
     let r = robots.get(origin);
     if (!r) {
-      r = loadRobots(robotsFetch, origin, { property, userAgent: USER_AGENT, timeoutMs: c.timeoutMs, signal, beforeRequest: (u) => pacer.wait(u) }).then((res) => {
+      r = loadRobots(robotsFetch, origin, { property, userAgent: USER_AGENT, timeoutMs: c.timeoutMs, signal, beforeRequest: (u) => pacer.wait(u), ...guard }).then((res) => {
         if (res.rules.crawlDelaySec !== null) pacer.setDelay(new URL(origin).host, res.rules.crawlDelaySec * 1000);
         return res;
       });
@@ -290,7 +295,7 @@ async function crawl(
     if (!isAllowed(r.rules, pathOf(u))) throw new RobotsBlocked();
     await pacer.wait(u);
   };
-  const pageOpts = { property, userAgent: USER_AGENT, timeoutMs: c.timeoutMs, maxBytes: c.maxBytes, signal, beforeRequest: politely };
+  const pageOpts = { property, userAgent: USER_AGENT, timeoutMs: c.timeoutMs, maxBytes: c.maxBytes, signal, beforeRequest: politely, ...guard };
 
   // 1. Origin: the first candidate whose homepage lands on the property.
   const candidates = ctx.config.siteOrigin ? [ctx.config.siteOrigin] : defaultOrigins(property);
@@ -298,7 +303,7 @@ async function crawl(
   let homeProbe: PageFetch | null = null;
   for (const cand of candidates) {
     const home = safeNormalize(cand);
-    if (!home || !urlAllowed(home, property)) continue;
+    if (!home || !urlAllowed(home, property, port)) continue;
     // A host that does not answer at all (robots.txt never arrived) is not the site: try the next one.
     const rb = await robotsFor(originOf(home));
     if (rb.state === 'unreachable' && rb.status === null) continue;
@@ -320,14 +325,19 @@ async function crawl(
     }
   }
   if (!origin) {
+    let refused = false;
+    for (const r of robots.values()) if ((await r).privateAddress) refused = true;
     return result('partial', {
-      notes: [`Could not reach your site at ${candidates.join(' or ')}. Set siteOrigin in config.json if it lives somewhere else.`],
+      notes: [refused
+        ? `Your site at ${candidates.join(' or ')} resolves to a private network address, so searchtrace didn't fetch it. ` +
+          'If that is your own network (split DNS or a hosts-file entry), set crawl.allowPrivateAddresses to true in config.json.'
+        : `Could not reach your site at ${candidates.join(' or ')}. Set siteOrigin in config.json if it lives somewhere else.`],
     });
   }
   const homepage = normalizeUrl(origin);
 
   // 2. Sitemaps.
-  const sitemapUrls = await collectSitemaps(origin, ctx, robotsFor, (u) => pacer.wait(u), sitemapFetch);
+  const sitemapUrls = await collectSitemaps(origin, ctx, robotsFor, (u) => pacer.wait(u), sitemapFetch, guard);
 
   // 3. The URL set.
   const gsc = gscImpressions(ctx);
@@ -496,7 +506,9 @@ async function collectSitemaps(
   robotsFor: (origin: string) => Promise<RobotsResult>,
   pace: (u: string) => Promise<void>,
   fetchFn: RunContext['fetch'],
+  guard: { port?: string; resolveHost?: ResolveHost } = {},
 ): Promise<string[]> {
+  const port = guard.port ?? '';
   const property = ctx.config.property;
   const declared = (await robotsFor(origin)).rules.sitemaps
     .map((s) => {
@@ -517,7 +529,7 @@ async function collectSitemaps(
     while (queue.length > 0 && fetched < MAX_SITEMAPS && found.size < MAX_SITEMAP_URLS) {
       const { url, depth } = queue.shift() as { url: string; depth: number };
       const key = safeNormalize(url);
-      if (!key || seen.has(key) || !urlAllowed(key, property)) continue;
+      if (!key || seen.has(key) || !urlAllowed(key, property, port)) continue;
       seen.add(key);
       const rules = (await robotsFor(originOf(key))).rules;
       if (!isAllowed(rules, pathOf(key))) continue;
@@ -531,6 +543,7 @@ async function collectSitemaps(
         signal: ctx.signal,
         beforeRequest: pace,
         gunzip: true,
+        ...guard,
       });
       if (g.outcome !== 'ok' || g.status === null || g.status < 200 || g.status >= 300) continue;
       const parsed = parseSitemapXml(g.text);
@@ -546,7 +559,7 @@ async function collectSitemaps(
           continue;
         }
         const n = safeNormalize(loc);
-        if (n && urlAllowed(n, property)) found.add(n);
+        if (n && urlAllowed(n, property, port)) found.add(n);
         if (found.size >= MAX_SITEMAP_URLS) break;
       }
     }

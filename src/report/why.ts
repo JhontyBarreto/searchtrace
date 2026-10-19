@@ -10,11 +10,12 @@ import { addDays, diffDays } from '../core/time.js';
 import { normalizeUrl, pathOf } from '../core/url.js';
 import type { AnalysisOutput, Finding, UpdateRow } from '../core/types.js';
 import {
-  BADGE, CAUSE_LABEL, REAL_LABEL, REMAINDER_LABEL, answerSentences, displayGroups, findingAlternatives, findingFalsifier,
-  findingSentence, headlineFinding, renderSentence,
+  BADGE, CAUSE_LABEL, answerSentences, findingAlternatives, findingFalsifier, findingSentence, headlineFinding, realLabel, remainderNote,
+  renderSentence, shownGroups, unitDisplay, whyText,
 } from './copy.js';
 import { eventName, fmtDate, fmtSignedInt } from './format.js';
-import { gscLink } from './gsc-links.js';
+import { verifyLink } from './gsc-links.js';
+import { reconciledFor, reconciledSentence } from './html.js';
 
 const WIDTH = 100;
 const FINDING_ID_RE = /^f[a-z2-7]{16}$/;
@@ -164,17 +165,26 @@ function rangeText(ci: [number, number] | null): string {
 
 interface Paint { bold(s: string): string; dim(s: string): string }
 
+/** "Real change · Why: Your change (Estimated)", with the Why part only when there is a cause to name. */
+function labelText(f: Finding): string {
+  if (f.reason === 'fact') return BADGE.EXTRACTED;
+  const why = whyText(f);
+  return `${realLabel(f)}${why ? ` · ${why}` : ''}`;
+}
+
 function evidenceChain(out: AnalysisOutput, f: Finding, paint: Paint, o: { headline: boolean }): string[] {
   const lines: string[] = [];
-  const header = o.headline ? `${out.property} · ${period(f)}` : `${f.unit.label} · ${period(f)}`;
+  const header = o.headline ? `${out.property} · ${period(f)}` : `${unitDisplay(f.unit)} · ${period(f)}`;
   lines.push(paint.bold(cleanTerminal(header)), '');
-  lines.push(`  ${paint.bold(REAL_LABEL[f.real])} · Why: ${CAUSE_LABEL[f.cause ?? 'unknown']} · ${BADGE[f.causeConfidence]}`);
+  // A 28-day comparison that dilutes a real step inside the window leads with the step, never "Nothing to act on".
+  const cp = o.headline ? null : reconciledFor(f, out);
+  lines.push(`  ${paint.bold(labelText(cp ?? f))}`);
   if (o.headline) {
     const a = answerSentences(out);
     lines.push(...wrap(a.sentence, '  '));
     if (a.verdict) lines.push(...wrap(a.verdict, '  '));
   } else {
-    lines.push(...wrap(findingSentence(f), '  '));
+    lines.push(...wrap(cp ? reconciledSentence(f, cp, out) : findingSentence(f), '  '));
   }
 
   const scope = o.headline ? out.scopes.find((s) => s.unit.level === 'site') : null;
@@ -182,20 +192,24 @@ function evidenceChain(out: AnalysisOutput, f: Finding, paint: Paint, o: { headl
   const ci = scope ? scope.ci95 : f.componentCi95;
   if (bars) {
     lines.push('', '  Where the clicks went (estimated, 95% range)');
-    for (const g of displayGroups(bars, ci as Record<string, [number, number]> | null)) {
-      if ((g.group === 'aioCitation' || g.group === 'churn') && g.value === 0 && !g.ci) continue;
+    for (const g of shownGroups(bars, ci as Record<string, [number, number]> | null)) {
       lines.push(`    ${g.label.padEnd(32)}${fmtSignedInt(g.value).padStart(6)}    ${rangeText(g.ci)}`.trimEnd());
     }
-    if (['site', 'template', 'page'].includes(f.unit.level)) {
-      const [name, rest] = REMAINDER_LABEL.split(' (');
-      lines.push(`    ${name.padEnd(32)}${' '.repeat(6)}    (${rest}`);
-    }
+    // The total's range is the "is it real?" one, the same as the answer's.
+    const total = o.headline && scope ? scope.deltaClicks : f.effect.absolute;
+    if (total !== null) lines.push(`    ${'Total'.padEnd(32)}${fmtSignedInt(total).padStart(6)}    ${rangeText(f.effect.absoluteCi95)}`.trimEnd());
+    if (['site', 'template', 'page'].includes(f.unit.level)) lines.push(...wrap(remainderNote(1 - out.diagnostics.namedClickShare), '    '));
   }
 
-  if (f.evidence.length) {
+  // The terminal shows what was measured; statistics and file paths live in --json and "Show the maths".
+  const evidence = f.evidence.filter((e) => e.type !== 'statistic');
+  if (evidence.length) {
     lines.push('', '  Evidence');
-    for (const e of f.evidence.slice(0, 8)) {
-      lines.push(cleanTerminal(`    ${BADGE[e.confidence].padEnd(10)} ${e.summary}   ${e.partition}`));
+    for (const e of evidence.slice(0, 8)) {
+      const head = `    ${BADGE[e.confidence].padEnd(10)} `;
+      const body = wrap(e.summary, ' '.repeat(head.length));
+      if (body.length) body[0] = head + body[0].trimStart();
+      lines.push(...body);
     }
   }
   const alts = findingAlternatives(f);
@@ -205,14 +219,17 @@ function evidenceChain(out: AnalysisOutput, f: Finding, paint: Paint, o: { headl
   }
   lines.push('');
   lines.push(...wrap(findingFalsifier(f), '  '));
-  if (f.verify) lines.push(`  Check it yourself: ${gscLink(out.property, f.verify)}`);
+  const v = verifyLink(out.property, f, out.diagnostics.brandTokens);
+  if (v) {
+    lines.push(`  Check it yourself: ${v.url}`);
+    if (v.note) lines.push(...wrap(`(${v.note})`, '  '));
+  }
   return lines;
 }
 
 function shortLine(f: Finding, paint: Paint): string[] {
-  const label = f.reason === 'fact' ? BADGE.EXTRACTED : `${REAL_LABEL[f.real]} · ${BADGE[f.causeConfidence]}`;
   return [
-    `  ${paint.bold(label)}  ${cleanTerminal(f.unit.label)}`,
+    `  ${paint.bold(labelText(f))}  ${cleanTerminal(unitDisplay(f.unit))}`,
     ...wrap(findingSentence(f), '    '),
   ];
 }
@@ -258,15 +275,17 @@ export function renderWhy(out: AnalysisOutput, target: string | null, o: { color
     case 'template':
     case 'query': {
       const [first, ...rest] = m.findings;
-      // The same sentence twice (a section and its site change) adds nothing: show it once.
-      const shown = new Set([findingSentence(first)]);
-      const others = rest.filter((f) => !shown.has(findingSentence(f)) && shown.add(findingSentence(f)));
+      // The same sentence twice (a section and its site change) adds nothing: show it once. A change
+      // point folded into the lead's own story is not repeated either.
+      const folded = reconciledFor(first, out);
+      const shown = new Set([findingSentence(first), ...(folded ? [findingSentence(folded)] : [])]);
+      const others = rest.filter((f) => f.id !== folded?.id && !shown.has(findingSentence(f)) && shown.add(findingSentence(f)));
       lines.push(...evidenceChain(out, first, paint, { headline: first.kind === 'headline' }));
       if (others.length) {
         const about = m.kind === 'query' ? 'Also about this search' : m.kind === 'template' ? 'Also about this section' : 'Also about this page';
         lines.push('', paint.bold(about));
         for (const f of others.slice(0, 5)) lines.push(...shortLine(f, paint));
-        if (others.length > 5) lines.push(`  and ${others.length - 5} more (searchtrace why --json)`);
+        if (others.length > 5) lines.push(`  and ${others.length - 5} more (add --json to see them all)`);
       }
       break;
     }
@@ -281,7 +300,7 @@ export function renderWhy(out: AnalysisOutput, target: string | null, o: { color
       if (m.findings.length) {
         lines.push(paint.bold('Findings that cover this date'));
         for (const f of m.findings.slice(0, 8)) lines.push(...shortLine(f, paint));
-        if (m.findings.length > 8) lines.push(`  and ${m.findings.length - 8} more (searchtrace why ${day} --json)`);
+        if (m.findings.length > 8) lines.push(`  and ${m.findings.length - 8} more (add --json to see them all)`);
       }
       break;
     }

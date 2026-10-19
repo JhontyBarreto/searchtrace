@@ -1,9 +1,11 @@
 // The verdict engine (5.8), MDE, weeks-to-power, confidence mapping and default deltas. Owner: WP-A.
 //
 // "Is it real?" has four answers: signal, noise, underpowered, unclear. The rules run in a fixed
-// order (floors, identification, signal, bounded noise, real but small, otherwise underpowered),
-// so the same inputs always give the same verdict. All functions are pure.
-import type { Confidence, PowerInfo, Verdict, VerdictInput, VerdictResult } from '../core/types.js';
+// order (floors, identification, signal, real but small, bounded noise, otherwise underpowered),
+// so the same inputs always give the same verdict. Noise has two reasons that read differently:
+// noise_small is a real but small change ("Small change"), noise_bounded is ordinary wobble.
+// All functions are pure.
+import type { AnalysisUnit, Confidence, PowerInfo, Verdict, VerdictInput, VerdictResult } from '../core/types.js';
 
 /** Smallest relative effect worth acting on, per kind of claim (5.8). */
 export const DEFAULT_DELTA: {
@@ -23,6 +25,18 @@ export const DEFAULT_DELTA: {
   changepoint: 0.15,
   siteChange: 0.1,
 });
+
+/**
+ * The delta for a claim about a unit, by its level: the same unit gets the same bar whether a
+ * 28-day comparison or a change point judges it, so one estimate can't be "Real change" in one
+ * section of the report and wobble in another. Brand and non-brand searches are site-wide
+ * aggregates, so they use the site's delta.
+ */
+export function deltaForUnit(unit: Pick<AnalysisUnit, 'level' | 'key'>): number {
+  if (unit.level === 'site' || unit.key.startsWith('class:')) return DEFAULT_DELTA.site;
+  if (unit.level === 'template') return DEFAULT_DELTA.template;
+  return unit.level === 'page' ? DEFAULT_DELTA.page : DEFAULT_DELTA.query;
+}
 
 /** 1.96 + 0.84: two-sided alpha 0.05 with 80% power. */
 const Z_POWER = 2.8;
@@ -71,7 +85,16 @@ function powerOf(v: VerdictInput): PowerInfo | null {
   return null;
 }
 
-/** The verdict rules of 5.8, applied in order. */
+/**
+ * The verdict rules of 5.8, applied in order. After the floors and the identification checks, the
+ * verdict is a 2 x 2: is the change real (the 95% range excludes 0 and it survives false-discovery
+ * control), and is it known to be small (the whole range sits inside (-delta, delta))?
+ *   real, not known to be small  -> signal ("Real change"; the size may still be uncertain)
+ *   real and small               -> noise, reason noise_small ("Small change": real, below delta)
+ *   not real, known to be small  -> noise, reason noise_bounded ("Normal wobble")
+ *   neither                      -> underpowered, reason wide_ci
+ * A range that excludes 0 but fails the false-discovery control is never called real.
+ */
 export function decideVerdict(v: VerdictInput): VerdictResult {
   // 1. Floors: too little data to say anything.
   if (!v.floorsMet) return { verdict: 'underpowered', reason: 'floors', power: powerOf(v), failed: [] };
@@ -81,15 +104,14 @@ export function decideVerdict(v: VerdictInput): VerdictResult {
   if (!v.ci95) return { verdict: 'underpowered', reason: 'wide_ci', power: powerOf(v), failed: [] };
   const [L, U] = v.ci95;
   const d = v.delta;
-  const excludesZero = L > 0 || U < 0;
-  // 3. Signal: the CI excludes 0, the effect is big enough to act on, and it survives the FDR control.
-  if (excludesZero && Math.abs(v.estimate) >= d && (v.q ?? 1) <= v.fdrQ) {
-    return { verdict: 'signal', reason: 'signal', power: null, failed: [] };
-  }
-  // 4. Bounded noise: the whole CI sits inside (-delta, delta).
-  if (L > -d && U < d) return { verdict: 'noise', reason: 'noise_bounded', power: null, failed: [] };
-  // 5. Real but small: the CI excludes 0 but the effect is below delta.
-  if (excludesZero && Math.abs(v.estimate) < d) return { verdict: 'noise', reason: 'noise_small', power: null, failed: [] };
+  const real = (L > 0 || U < 0) && (v.q ?? 1) <= v.fdrQ;
+  const bounded = L > -d && U < d;
+  // 3. Signal: real, and the range reaches past delta (or the estimate itself is that big).
+  if (real && !bounded) return { verdict: 'signal', reason: 'signal', power: null, failed: [] };
+  // 4. Real but small: real, and the whole range sits inside (-delta, delta).
+  if (real) return { verdict: 'noise', reason: 'noise_small', power: null, failed: [] };
+  // 5. Bounded noise: not shown to be real, and any real change is smaller than delta.
+  if (bounded) return { verdict: 'noise', reason: 'noise_bounded', power: null, failed: [] };
   // 6. Otherwise the interval is too wide to tell.
   return { verdict: 'underpowered', reason: 'wide_ci', power: powerOf(v), failed: [] };
 }

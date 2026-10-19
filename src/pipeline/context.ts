@@ -1,10 +1,10 @@
 // RunContext factory: store, index, auth, clock, fetch, logger, secrets. Owner: WP-F.
-import { readFileSync } from 'node:fs';
 import { loadConfig } from '../core/config.js';
 import { StError } from '../core/errors.js';
 import { newRunId } from '../core/ids.js';
 import { rngFor } from '../core/rng.js';
 import { createLogger } from '../core/log.js';
+import { toolVersion } from '../core/install.js';
 import { createSecretRegistry } from '../core/secrets.js';
 import { systemClock } from '../core/time.js';
 import type {
@@ -27,22 +27,13 @@ export interface PipelineExtras {
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** Called as each phase starts, for progress output. */
   onPhase?: (name: PhaseName) => void;
+  /** Host lookups for the crawler's private-address check (the CLI passes real DNS). */
+  resolveHost?: (host: string) => Promise<string[]>;
 }
 export type PipelineInput = PipelineOptions & PipelineExtras;
 
-let cachedVersion: string | null = null;
-
-/** The running package version, read from package.json next to src/ or dist/. */
-export function toolVersion(): string {
-  if (cachedVersion) return cachedVersion;
-  try {
-    const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version?: unknown };
-    cachedVersion = typeof pkg.version === 'string' ? pkg.version : '0.1.0';
-  } catch {
-    cachedVersion = '0.1.0';
-  }
-  return cachedVersion;
-}
+// The running package version lives in core so hints anywhere can name the release.
+export { toolVersion };
 
 /** UTC instant with second precision. */
 export function instantOf(d: Date): Instant {
@@ -76,6 +67,7 @@ export async function createRunContext(o: PipelineInput): Promise<RunContext> {
     flags,
     google: null,
     env,
+    ...(o.resolveHost ? { resolveHost: o.resolveHost } : {}),
   };
 }
 

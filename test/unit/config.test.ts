@@ -13,7 +13,7 @@ const EXPECTED_DEFAULTS = {
   auth: { credentialsEnv: 'SEARCHTRACE_GOOGLE_KEY' },
   gsc: { backfillMonths: 16, revalidateAfterDays: 10, concurrency: 2, requestsPerSecond: 4 },
   inspection: { enabled: true, dailyBudget: 200, shareOfPropertyQuota: 0.25 },
-  crawl: { enabled: true, maxUrls: 500, concurrency: 2, delayMs: 1000, timeoutMs: 15000, maxBytes: 5_000_000, minHoursBetween: 20 },
+  crawl: { enabled: true, maxUrls: 500, concurrency: 2, delayMs: 1000, timeoutMs: 15000, maxBytes: 5_000_000, minHoursBetween: 20, allowPrivateAddresses: false },
   serp: { provider: 'none' },
   analysis: {
     windowDays: 28,
@@ -50,6 +50,14 @@ describe('ConfigSchema defaults (D21, test 70)', () => {
       maxPerRunUsd: 0.3,
       costPerCheckUsd: 0.0012,
     });
+  });
+
+  it('needs a positive price per check (a zero or negative one would hide the spend)', () => {
+    const at = (costPerCheckUsd: number) => ConfigSchema.safeParse({ version: 1, property: PROPERTY, serp: { provider: 'dataforseo', costPerCheckUsd } }).success;
+    expect(at(0.0012)).toBe(true);
+    expect(at(0.0006)).toBe(true); // accepted, but planned at $0.0012 (budget.ts planningPrice)
+    expect(at(0)).toBe(false);
+    expect(at(-1)).toBe(false);
   });
 
   it('accepts both property forms and rejects a bare domain or a URL without the trailing slash', () => {

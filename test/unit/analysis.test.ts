@@ -154,6 +154,25 @@ describe('runAnalysis over a memory index', () => {
     expect(guides?.verify).toEqual({ from: out.windows.baseline[0], to: D });
   });
 
+  it('gives every total one "is it real?" range: the headline\'s clicks range is its percent range in clicks (waterfall-ranges)', () => {
+    const head = out.findings.find((f) => f.kind === 'headline') as (typeof out.findings)[number];
+    const c = out.headline.clicks;
+    expect(head.effect.absoluteCi95?.[0]).toBeCloseTo(c.post * Math.exp(-1.96 * c.se) - c.pre, 6);
+    expect(head.effect.absoluteCi95?.[1]).toBeCloseTo(c.post * Math.exp(1.96 * c.se) - c.pre, 6);
+    // A section's percent and click ranges come from the same SE too.
+    const guides = out.findings.find((f) => f.kind === 'waterfall' && f.unit.key === '/guides/*');
+    const scope = out.scopes.find((s) => s.unit.key === '/guides/*');
+    const [lo] = guides?.effect.ci95 as [number, number];
+    expect(guides?.effect.absoluteCi95?.[0]).toBeCloseTo((scope?.baseClicks ?? 0) * lo, 6);
+  });
+
+  it('never calls a real but small whole-site change boring', () => {
+    // Guides -10%: the site total moves about -5.6% with a range that excludes zero.
+    const small = runAnalysis(input(synthSite('analysis:boring', 0.9)));
+    expect(small.headline.clicks.reason).toBe('noise_small');
+    expect(small.headline.boring).toBe(false);
+  }, 60_000);
+
   it('records diagnostics, windows and the inputs hash', () => {
     expect(out.windows.seasonal).toBeNull();
     expect(out.dataThrough).toBe(D);
@@ -236,10 +255,12 @@ describe('runAnalysis edge cases', () => {
 });
 
 describe('headline.boring across re-runs of the same data', () => {
-  // A quiet site (guides -10%, inside normal wobble) whose only news is one page leaving Google's
+  // A quiet site (guides -3%, ordinary wobble) whose only news is one page leaving Google's
   // index: a new signal, so the run is not boring. The pipeline then saves the findings with
   // meta.day = dataThrough; analysing the same data again must not call it boring.
-  const site = synthSite('analysis:boring', 0.9);
+  // (Guides used to fall 10%, which gave a site-wide -5.6% with a range of -9.9% to -1.0%: a real
+  // but small change, which no longer counts as "nothing important changed".)
+  const site = synthSite('analysis:boring', 0.97);
   const page = `${ORIGIN}guides/guide-1`;
   const inspections = [
     { url: page, inspectedAt: '2026-09-20T10:00:00Z', reason: 'traffic' as const, verdict: 'PASS', coverageState: 'Submitted and indexed' },
@@ -249,6 +270,7 @@ describe('headline.boring across re-runs of the same data', () => {
 
   it('is not boring the first time a real change is reported', () => {
     expect(first.headline.clicks.real).toBe('noise');
+    expect(first.headline.clicks.reason).toBe('noise_bounded');
     expect(first.findings.some((f) => f.kind === 'index_transition' && f.real === 'signal')).toBe(true);
     expect(first.headline.boring).toBe(false);
   });

@@ -125,7 +125,9 @@ describe('main', () => {
     const c = capture();
     expect(await main(['run'], c.deps)).toBe(2);
     expect(c.stderr()).toContain('No config.json');
-    expect(c.stderr()).toContain('npx searchtrace setup');
+    expect(c.stderr()).toContain('Run `searchtrace setup` to create one');
+    // Hints never send anyone to the npm registry name (it isn't ours to rely on).
+    expect(c.stderr()).not.toMatch(new RegExp('npx\\s+' + 'searchtrace'));
   });
 
   it('routes a bare command to setup without a config and to run with one', async () => {
@@ -199,8 +201,8 @@ describe('run', () => {
     expect(out).toContain('\nThe answer\n  In the last 28 days Google sent you 80 clicks, 9 fewer than the 28 days before (-10%).');
     expect(out).toContain('Also worth knowing\n  · Real change:');
     expect(out).toMatch(/Report {3}file:\/\/.*\/reports\/latest\.html/);
-    expect(out).toContain('Why      npx searchtrace why\n');
-    expect(out).toContain('Graph    searchtrace-data/graphify-out/graph.json (1,912 nodes) · ask it in Claude: see docs/GRAPHIFY.md');
+    expect(out).toContain('Why      searchtrace why\n');
+    expect(out).toContain('Graph    searchtrace-data/graphify-out/graph.json (1,912 nodes)\n         ask it in Claude: https://github.com/JhontyBarreto/searchtrace/blob/main/docs/GRAPHIFY.md');
   });
 
   it('prints the 6.4.2 dry-run plan', async () => {
@@ -208,7 +210,7 @@ describe('run', () => {
     const c = capture();
     expect(await main(['run', '--dry-run'], c.deps)).toBe(0);
     expect(c.stdout()).toContain('Plan for sc-domain:example.com (nothing will be fetched)\n\nFree (Google and your site)\n  gsc                   planned');
-    expect(c.stdout()).toContain('Run it for real: npx searchtrace run');
+    expect(c.stdout()).toContain('Run it for real: searchtrace run');
   });
 });
 
@@ -227,7 +229,7 @@ describe('terminal layouts', () => {
       '  Google update feed    1 request', '',
       'Paid (DataForSEO, standard queue)',
       '  AI Overview checks    206 searches x 1 device = 206 checks x $0.0012 = $0.25 (worst case)', '',
-      'Run it for real: npx searchtrace run', '',
+      'Run it for real: searchtrace run', '',
     ].join('\n'));
   });
 
@@ -238,8 +240,12 @@ describe('terminal layouts', () => {
     const text = formatRunSummary(s, { property: 'sc-domain:example.com', config: defaultConfig('sc-domain:example.com'), today: '2026-10-06', dir: '/data/searchtrace-data', cwd: '/data', findings });
     expect(text).toContain('  Search Console        490 days stored (490 new) · 1,031 requests');
     expect(text).toContain("  Not enough data to tell yet. With about 20 clicks a week, only a change of roughly 45% or more");
-    expect(text).toContain('  · Real change: impressions on /blog/* dropped by 18% around 12 Sep 2026');
-    expect(text).toContain('  · Google hides the exact searches behind 81% of your clicks. Page-level numbers include\n    everything.');
+    // The finding sentences come from the copy deck (report/copy.ts, tested in report-copy.test.ts),
+    // so this checks the summary's own layout: the bullets, the 100-column wrap and the hanging indent.
+    const worth = text.slice(text.indexOf('Also worth knowing\n'), text.indexOf('\nReport '));
+    expect(worth).toMatch(/\n {2}· Real change: /);
+    expect(worth).toMatch(/\n {2}· .*\n {4}\S/);
+    for (const line of worth.split('\n')) expect(line.length).toBeLessThanOrEqual(100);
     expect(text).toContain('Graph    searchtrace-data/graphify-out/graph.json (1,912 nodes)');
   });
 });
@@ -253,7 +259,8 @@ describe('why', () => {
     const plain = capture({ env: { NO_COLOR: '1' } }, { tty: true });
     expect(await main(['why'], plain.deps)).toBe(0);
     expect(plain.stdout()).not.toContain('\u001b[');
-    expect(plain.stdout()).toContain('Not enough data yet · Why: Unclear · Possible');
+    // The exact wording of why's lines belongs to report/why.ts (report-why.test.ts); here only the verdict label.
+    expect(plain.stdout()).toContain('Not enough data yet');
     const json = capture();
     expect(await main(['explain', '/blog/slow-drains', '--json'], json.deps)).toBe(0);
     const doc = JSON.parse(json.stdout());
