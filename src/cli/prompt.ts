@@ -1,7 +1,7 @@
 // readline prompts (TTY only, never with --ci or --yes) and the terminal IO the commands share. Owner: WP-F.
 import { lookup } from 'node:dns/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { StError, ExitCode } from '../core/errors.js';
@@ -169,10 +169,20 @@ export function out(deps: CliDeps, line = ''): void {
   deps.stdout.write(`${line}\n`);
 }
 
-/** A path as the user would type it: relative when it sits under cwd, absolute otherwise, quoted when needed. */
-export function displayPath(cwd: string, p: string): string {
+/**
+ * A path as the user would type it: relative when it sits under cwd, absolute otherwise, quoted
+ * when needed. A relative path names something that ends up in git or the GitHub Action, so it is
+ * shown with forward slashes on every OS. An absolute path keeps the OS separator. On Windows a
+ * backslash is that separator, so it is never doubled; elsewhere it is a literal character a shell
+ * would eat, so it still gets quoted and escaped.
+ */
+export function displayPath(cwd: string, p: string, pathSep: string = sep): string {
   const rel = relative(cwd, p);
-  const shown = rel === '' ? '.' : rel.startsWith('..') || isAbsolute(rel) ? p : rel;
-  return /[\s"'$`\\!*?;&|<>()]/.test(shown) ? `"${shown.replace(/(["$`\\])/g, '\\$1')}"` : shown;
+  const isRel = rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+  const shown = rel === '' ? '.' : isRel ? rel.split(pathSep).join('/') : p;
+  const win = pathSep === '\\';
+  const special = win ? /[\s"'$`!*?;&|<>()]/ : /[\s"'$`\\!*?;&|<>()]/;
+  const escape = win ? /(["$`])/g : /(["$`\\])/g;
+  return special.test(shown) ? `"${shown.replace(escape, '\\$1')}"` : shown;
 }
 

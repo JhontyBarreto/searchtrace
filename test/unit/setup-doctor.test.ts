@@ -344,6 +344,12 @@ describe('setup wizard, for people who are not developers', () => {
     const s1 = scripted([[/^Try them\?/, true], [/^ {2}Pick 1, 2 or 3/, '2'], [/^Run it now\?/, false]]);
     const c = capture({ prompter: s1.prompter, stdinIsTTY: true, env: { PATH: '', GOOGLE_APPLICATION_CREDENTIALS: key } });
     expect(await main(['setup', '--dir', data], c.deps)).toBe(0);
+    if (process.platform === 'win32') {
+      // Windows has no cron: setup points at Task Scheduler instead, in one plain sentence.
+      expect(c.stdout()).toContain('Windows has no cron.');
+      expect(c.stdout()).toContain('Task Scheduler');
+      return;
+    }
     const line = c.stdout().split('\n').find((l) => l.includes('17 6 * * *')) ?? '';
     expect(line).toContain(`"${process.execPath}" "`);
     expect(line).toContain(`run --dir "${data}" --quiet >> "${join(data, 'state', 'cron.log')}" 2>&1`);

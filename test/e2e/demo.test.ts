@@ -13,6 +13,7 @@
 import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { demoCommand } from '../../src/cli/commands/demo.js';
 import { runCommand } from '../../src/cli/commands/run.js';
@@ -184,8 +185,9 @@ describe('demo: the demo command, then run and why, offline', () => {
       }) as typeof fetch,
     };
   }
-  /** Temporary paths become <DATA> so golden files are the same on every machine. */
-  const normalise = (text: string): string => text.split(dir).join('<DATA>').split(parent).join('<PARENT>');
+  /** Temporary paths become <DATA> so golden files are the same on every machine (the file:// form first: on Windows it is URL-encoded). */
+  const normalise = (text: string): string =>
+    text.split(pathToFileURL(dir).href).join('file://<DATA>').split(dir).join('<DATA>').split(parent).join('<PARENT>');
 
   beforeAll(async () => {
     parent = await mkdtemp(join(tmpdir(), 'searchtrace-demo-e2e-'));
