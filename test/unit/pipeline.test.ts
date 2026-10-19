@@ -3,7 +3,7 @@
 // modules are mocked so this runs against WP-A's real store and index before B to E land.
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { defaultConfig, writeConfig } from '../../src/core/config.js';
 import { StError } from '../../src/core/errors.js';
@@ -309,7 +309,7 @@ describe('runPipeline', () => {
 
   it('writes the step summary in CI', async () => {
     await seeded();
-    const summary = join(dir, '..', `${dir.split('/').pop()}-summary.md`);
+    const summary = join(dir, '..', `${basename(dir)}-summary.md`);
     await writeFile(summary, '');
     await runPipeline({ dir, flags: flags({ offline: true, ci: true }), clock: CLOCK, env: { GITHUB_STEP_SUMMARY: summary }, quiet: true });
     const text = await readFile(summary, 'utf8');
