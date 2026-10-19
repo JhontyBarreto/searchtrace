@@ -7,7 +7,7 @@
 // ~/.config/searchtrace/ with mode 0600, and never into the data folder or a git repo.
 import { existsSync, readFileSync } from 'node:fs';
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ConfigSchema, defaultConfig, loadConfig, writeConfig } from '../../core/config.js';
 import { ExitCode, StError } from '../../core/errors.js';
@@ -377,6 +377,10 @@ async function tryFound(base: Config, deps: CliDeps, secrets: SecretRegistry): P
 
 /** The cron line for this install: absolute Node and searchtrace paths, so cron's bare PATH can't break it. */
 async function printCron(deps: CliDeps, dir: string, config: Config): Promise<void> {
+  if (process.platform === 'win32') {
+    out(deps, `  Windows has no cron. Run ${cli('run')} --dir "${dir}" --quiet daily with Task Scheduler instead, or pick the GitHub Action.`);
+    return;
+  }
   const node = process.execPath;
   const bin = fileURLToPath(new URL('../../bin.js', import.meta.url));
   if ([dir, node, bin].some((x) => /[%"$`\\\n]/.test(x))) {
@@ -425,7 +429,9 @@ async function wizard(v: Values, deps: CliDeps, secrets: SecretRegistry): Promis
     const about = found ? describeCredential(found.path) : null;
     let tried = false;
     if (found && about) {
-      out(deps, `I found ${about.words} on this computer (${found.label.replace(deps.homedir, '~')}).`);
+      // A home-relative label is the well-known gcloud path, shown with forward slashes on every OS.
+      const shown = found.label.replace(deps.homedir, '~');
+      out(deps, `I found ${about.words} on this computer (${shown.startsWith('~') ? shown.split(sep).join('/') : shown}).`);
       if (about.gcloudDefault) {
         out(deps, "  It's gcloud's own sign-in, which Google never lets read Search Console, so it won't work here.");
       }
