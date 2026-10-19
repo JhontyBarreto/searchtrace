@@ -2,16 +2,16 @@
 
 All notable changes to searchtrace are listed here. Versions follow semantic versioning.
 
-## Unreleased
-
-- Windows: paths printed by setup and the run summary no longer show doubled backslashes; repo-relative paths use forward slashes on every OS.
-- Windows: a corrupt index file is now closed before it is deleted and rebuilt, so the rebuild works instead of failing with EPERM/EBUSY.
-- Windows: setup finds the gcloud sign-in under %APPDATA%\gcloud and prints its path with forward slashes.
-- Windows: setup's "keep it running" step explains that Windows has no cron and points at Task Scheduler or the GitHub Action, instead of printing a cron line that cannot work.
-
-## 0.1.0 (2026-10-06)
+## 0.1.0 (2026-10-19)
 
 The first release.
+
+### Windows
+
+- Paths printed by setup and the run summary no longer show doubled backslashes. Repo-relative paths use forward slashes on every OS.
+- A corrupt index file is now closed before it is deleted and rebuilt, so the rebuild works instead of failing with EPERM or EBUSY.
+- When setup finds the gcloud sign-in under %APPDATA%\gcloud, it shows the path with forward slashes.
+- Setup's "keep it running" step explains that Windows has no cron and points at Task Scheduler or the GitHub Action, instead of printing a cron line that cannot work.
 
 ### Collecting
 
