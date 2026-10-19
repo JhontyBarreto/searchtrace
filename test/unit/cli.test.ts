@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mainWith as main } from '../../src/cli/main.js';
-import type { CliDeps, Prompter } from '../../src/cli/prompt.js';
+import { displayPath, type CliDeps, type Prompter } from '../../src/cli/prompt.js';
 import { formatPlan, formatRunSummary } from '../../src/cli/commands/run.js';
 import { resolveNoteUrls } from '../../src/cli/commands/note.js';
 import { defaultConfig, writeConfig } from '../../src/core/config.js';
@@ -311,5 +311,19 @@ describe('demo', () => {
     await writeFile(join(dir, 'busy'), 'x');
     const again = capture();
     expect(await main(['demo', '--out', dir], again.deps)).toBe(2);
+  });
+});
+
+describe('displayPath', () => {
+  it('shows paths under cwd with forward slashes and leaves plain ones unquoted', () => {
+    expect(displayPath('/w', '/w/.github/workflows/searchtrace.yml')).toBe('.github/workflows/searchtrace.yml');
+    expect(displayPath('/w', '/w')).toBe('.');
+  });
+  it('quotes and escapes a literal backslash on POSIX so a shell keeps it', () => {
+    expect(displayPath('/w', '/data/a\\b', '/')).toBe('"/data/a\\\\b"');
+  });
+  it('never doubles a Windows separator', () => {
+    expect(displayPath('/w', 'C:\\Users\\me\\data', '\\')).toBe('C:\\Users\\me\\data');
+    expect(displayPath('/w', 'C:\\Program Files\\data', '\\')).toBe('"C:\\Program Files\\data"');
   });
 });
