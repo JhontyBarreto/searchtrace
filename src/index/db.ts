@@ -105,10 +105,16 @@ function rebuild(db: SqlDb): void {
 function openRaw(path: string): SqlDb {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
-  db.exec('PRAGMA busy_timeout = 5000');
-  db.exec('PRAGMA journal_mode = WAL');
-  db.exec('PRAGMA synchronous = NORMAL');
-  if (userVersion(db) !== SCHEMA_VERSION) rebuild(db);
+  try {
+    db.exec('PRAGMA busy_timeout = 5000');
+    db.exec('PRAGMA journal_mode = WAL');
+    db.exec('PRAGMA synchronous = NORMAL');
+    if (userVersion(db) !== SCHEMA_VERSION) rebuild(db);
+  } catch (e) {
+    // Close before openIndex deletes the file: on Windows a file cannot be removed while open.
+    db.close();
+    throw e;
+  }
   return db;
 }
 
